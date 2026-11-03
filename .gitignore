@@ -1,0 +1,29 @@
+# Kredensial & data rahasia
+config.py
+.env
+state.json
+data/
+
+# Export jaringan (berisi access_token - JANGAN PERNAH di-commit)
+download
+*.har
+
+# Python
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Log
+logs/
+*.log
+
+# Sistem & editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

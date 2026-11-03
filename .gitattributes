@@ -1,0 +1,10 @@
+# Normalisasi line ending: repo simpan LF, checkout ikut LF (server Ubuntu & Windows sama)
+* text=auto eol=lf
+
+# File yang memang harus LF agar tidak rusak saat dieksekusi/di-parse systemd
+*.sh text eol=lf
+*.service text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

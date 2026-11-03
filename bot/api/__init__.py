@@ -1,0 +1,1 @@
+"""Integrasi API monev Maganghub."""

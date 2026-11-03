@@ -1,0 +1,24 @@
+# config.py — salin file ini menjadi `config.py` lalu isi nilai aslinya.
+# File `config.py` sudah di-gitignore, JANGAN pernah di-commit.
+
+# --- Telegram ---
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+
+# --- Maganghub monev ---
+# Boleh URL lengkap endpoint daily-logs; base URL diturunkan otomatis.
+MONEV_API_URL = "https://monev-api.maganghub.kemnaker.go.id/api/v1/daily-logs"
+PARTICIPANT_ID = "YOUR_PARTICIPANT_ID"
+
+# Token sesi. Umur efektif +/- 6 jam dan sesi lama dibatalkan saat Anda login lagi,
+# jadi setelah build cukup perbarui lewat chat Telegram: /token <bearer>
+BEARER_TOKEN = "Bearer YOUR_BEARER_TOKEN"
+
+# --- Opsional (boleh dihapus, memakai default di bot/settings.py) ---
+TZ_NAME = "Asia/Jakarta"
+POLL_MINUTES = 15
+REMINDER_EVENING = "18:00"
+REMINDER_FOLLOWUP = "21:00"
+REMINDER_EMERGENCY = "23:00"
+DB_PATH = "data/bot.db"
+LOG_LEVEL = "INFO"
