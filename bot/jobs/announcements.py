@@ -13,11 +13,11 @@ from typing import Any
 import aiosqlite
 
 from .. import store
-from ..api import endpoints
-from ..api.client import MonevClient
+from ..messages import absensi
+from ..monev import endpoints
+from ..monev.client import MonevClient
 from ..models import User
 from ..settings import Settings
-from ..tg import format as fmt
 
 log = logging.getLogger("bot.info")
 
@@ -59,7 +59,7 @@ async def run_info_job(
         await store.set_flag(db, user.tg_chat_id, "", flag, now)
         await notify.send_message(
             user.tg_chat_id,
-            fmt.announcement_message(
+            absensi.announcement_message(
                 str(item.get("title") or "Pengumuman"),
                 _summary(item),
                 str(item.get("type") or "INFO"),
@@ -85,7 +85,7 @@ async def run_info_job(
             continue
         await store.set_flag(db, user.tg_chat_id, "", flag, now)
         text = str(item.get("message") or item.get("reason") or _summary(item))
-        await notify.send_message(user.tg_chat_id, fmt.warning_message(text))
+        await notify.send_message(user.tg_chat_id, absensi.warning_message(text))
         await store.add_event(
             db, user.tg_chat_id, "", "", "", store.KIND_INFO, f"warning {warn_id}", now
         )

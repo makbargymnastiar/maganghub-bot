@@ -3,8 +3,8 @@
 import base64
 import json
 
-from bot.api.b64 import maybe_b64_json
-from bot.api.jwt_utils import decode_claims, fingerprint, looks_like_jwt, ttl_seconds
+from bot.monev.b64 import maybe_b64_json
+from bot.monev.jwt_utils import decode_claims, fingerprint, looks_like_jwt, ttl_seconds
 from bot.settings import _derive_base_url, load_settings, mask_token
 
 ANNOUNCEMENTS_B64 = base64.b64encode(

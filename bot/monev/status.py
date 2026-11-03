@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .models import LOG_FIELDS, DayRecord
+from ..models import LOG_FIELDS, DayRecord
 
 # --- Klaim enum yang terkonfirmasi dari JS frontend + data API -----------------
 ATT_DAYOFF = "DAYOFF"
@@ -32,8 +32,7 @@ LOG_DRAFT = "DRAFT"
 class Label:
     key: str
     emoji: str
-    title: str  # label resmi frontend (perspektif "peserta")
-    action: str  # apa yang perlu dilakukan pemagang
+    title: str  # judul pendek untuk chat (bukan teks persis portal)
 
     @property
     def is_filled(self) -> bool:
@@ -41,41 +40,24 @@ class Label:
         return self.key not in NAGGABLE_KEYS
 
 
-# Status yang masih boleh ditagih reminder: isian belum lengkap atau belum dikirim.
-NAGGABLE_KEYS = frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"})
+# Status yang masih boleh ditagih reminder: isian belum lengkap.
+# Catatan: dulu ada FILLED_NOT_SUBMITTED ("sudah diisi tapi belum dikirim") —
+# di portal sebenarnya tidak ada tahap itu: lengkap = terkirim, jadi label dihapus.
+NAGGABLE_KEYS = frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL"})
 
 
-APPROVED = Label("APPROVED", "✅", "Hadir disetujui", "Tidak ada tindakan.")
-APPROVED_LEAVE = Label("APPROVED_LEAVE", "🟢", "Izin disetujui", "Tidak ada tindakan.")
-ABSENT = Label("ABSENT", "⛔", "Tidak Hadir", "Catatan: hari ini tercatat tidak hadir.")
-REJECTED = Label("REJECTED", "❌", "Kehadiran Ditolak", "Periksa portal monev, ajukan ulang bila perlu.")
-NEEDS_REVISION = Label(
-    "NEEDS_REVISION", "🟠", "Perlu Tindakan Anda", "Uraian aktivitas diminta diperbaiki mentor."
-)
-REVISION_SUBMITTED = Label(
-    "REVISION_SUBMITTED", "⏳", "Perbaikan Menunggu Peninjauan", "Tunggu mentor meninjau perbaikan."
-)
-PENDING_REVIEW = Label(
-    "PENDING_REVIEW", "📝", "Menunggu Persetujuan", "Sudah diisi dan terkirim, tunggu ACC mentor."
-)
-FILLED_NOT_SUBMITTED = Label(
-    "FILLED_NOT_SUBMITTED",
-    "🟣",
-    "Sudah Diisi, Belum Dikirim",
-    "Aktivitas/pembelajaran/kendala lengkap — tekan kirim di portal supaya mentor bisa ACC.",
-)
-PARTIAL = Label(
-    "PARTIAL", "🟡", "Sebagian Terisi", "Lengkapi isian yang masih kosong, lalu kirim."
-)
-EMPTY = Label("EMPTY", "⚪", "Belum Diisi", "Isi absensi dan uraian aktivitas hari ini.")
-HOLIDAY = Label("HOLIDAY", "🗓️", "Hari Libur", "Tidak ada pengisian pada hari libur.")
-ATTENDED_NO_LOG = Label(
-    "ATTENDED_NO_LOG",
-    "🔵",
-    "Sudah Absen, Uraian Belum Diisi",
-    "Kehadiran sudah tercatat, tinggal isi uraian aktivitas.",
-)
-UNKNOWN = Label("UNKNOWN", "❔", "Status Tidak Dikenal", "Periksa portal monev.")
+APPROVED = Label("APPROVED", "✅", "Hadir Disetujui")
+APPROVED_LEAVE = Label("APPROVED_LEAVE", "🟢", "Izin Disetujui")
+ABSENT = Label("ABSENT", "⛔", "Tidak Hadir")
+REJECTED = Label("REJECTED", "❌", "Ditolak")
+NEEDS_REVISION = Label("NEEDS_REVISION", "🟠", "Perlu Revisi")
+REVISION_SUBMITTED = Label("REVISION_SUBMITTED", "⏳", "Perbaikan Menunggu Peninjauan")
+PENDING_REVIEW = Label("PENDING_REVIEW", "📝", "Menunggu ACC Mentor")
+PARTIAL = Label("PARTIAL", "🟡", "Sebagian Terisi")
+EMPTY = Label("EMPTY", "⚪", "Belum Diisi")
+HOLIDAY = Label("HOLIDAY", "🗓️", "Hari Libur")
+ATTENDED_NO_LOG = Label("ATTENDED_NO_LOG", "🔵", "Sudah Absen, Uraian Belum Diisi")
+UNKNOWN = Label("UNKNOWN", "❔", "Status Tidak Dikenal")
 
 ALL_LABELS: dict[str, Label] = {
     lab.key: lab
@@ -87,7 +69,6 @@ ALL_LABELS: dict[str, Label] = {
         NEEDS_REVISION,
         REVISION_SUBMITTED,
         PENDING_REVIEW,
-        FILLED_NOT_SUBMITTED,
         PARTIAL,
         EMPTY,
         HOLIDAY,
@@ -103,8 +84,8 @@ def resolve(record: DayRecord) -> Label:
     Satu deviasi sadar (nomor 7): frontend melabeli "Hadir disetujui" begitu
     `attendance.approval_status == APPROVED`, padahal uraian harian masih boleh
     kosong. Untuk bot pengingat, selama aktivitas/pembelajaran/kendala belum
-    lengkap atau belum dikirim, pekerjaan peserta belum selesai — jadi label
-    kelengkapan menang, kecuali hari izin (uraian tidak ditagih).
+    lengkap, pekerjaan peserta belum selesai — jadi label kelengkapan menang,
+    kecuali hari izin (uraian tidak ditagih).
     """
     att = record.attendance
     state = record.log_state
@@ -133,7 +114,8 @@ def resolve(record: DayRecord) -> Label:
     # 7. isian harian belum final — dahulukan daripada "hadir disetujui" (lihat docstring)
     if state in (None, LOG_DRAFT) and record.attendance_status != ATT_ON_LEAVE:
         if record.content_complete:
-            return FILLED_NOT_SUBMITTED
+            # Portal tidak punya tahap "belum dikirim": lengkap = terkirim.
+            return PENDING_REVIEW
         if record.filled_count:
             return PARTIAL
         # Hadir di hari kerja (atau draf tanpa isi) tapi laporan belum ada isinya.

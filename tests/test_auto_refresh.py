@@ -14,12 +14,12 @@ import pytest
 
 from bot import db as dbmod
 from bot import store
-from bot.api.client import MonevError, TokenRejected
+from bot.monev.client import MonevError, TokenRejected
 from bot.jobs import token_health
 from bot.models import User
 from bot.settings import load_settings, normalize_cookie
-from bot.tg import commands
-from bot.tg.commands import BotContext, apply_cookie, dispatch, poll_auto
+from bot.telegram import commands
+from bot.telegram.commands import BotContext, apply_cookie, dispatch, poll_auto
 from tests.test_poll_diff import FakeMonevClient, FakeTelegram, make_payloads
 
 TZ = "+07:00"

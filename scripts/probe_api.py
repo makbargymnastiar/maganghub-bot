@@ -22,12 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bot import db as dbmod
 from bot import store
-from bot.api import endpoints
-from bot.api.client import MonevClient, MonevError, TokenRejected
 from bot.jobs.poll import build_records, months_for_window
+from bot.monev import endpoints
+from bot.monev.client import MonevClient, MonevError, TokenRejected
+from bot.monev.status import pending_detail, resolve, unknown_detail
 from bot.models import LOG_FIELDS
 from bot.settings import load_settings, mask_token
-from bot.status import pending_detail, resolve, unknown_detail
 from run import force_utf8_console
 
 

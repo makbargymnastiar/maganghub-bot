@@ -120,11 +120,6 @@ async def update_refresh_cookie(
     await db.commit()
 
 
-async def set_reminders_on(db: aiosqlite.Connection, user_id: str, on: bool) -> None:
-    await db.execute("UPDATE users SET reminders_on = ? WHERE tg_chat_id = ?", (int(on), user_id))
-    await db.commit()
-
-
 # --- status harian -------------------------------------------------------------
 
 async def get_day_state(
@@ -143,6 +138,23 @@ async def list_day_states(
         """SELECT * FROM day_state WHERE user_id = ? AND log_date >= ?
            ORDER BY log_date DESC LIMIT ?""",
         (user_id, since_date, limit),
+    ) as cur:
+        return list(await cur.fetchall())
+
+
+async def list_day_states_with_labels(
+    db: aiosqlite.Connection, user_id: str, labels: tuple[str, ...], max_date: str
+) -> list[aiosqlite.Row]:
+    """Tanggal yang masih berstatus salah satu `labels` sampai `max_date` (inklusif).
+
+    Dipakai tagihan ACC: tanggal yang `log_date <= hari-ini-5` dan masih
+    PENDING_REVIEW/REVISION_SUBMITTED berarti sudah ≥5 hari menunggu mentor.
+    """
+    placeholders = ",".join("?" for _ in labels)
+    async with db.execute(
+        f"""SELECT * FROM day_state WHERE user_id = ? AND label IN ({placeholders})
+           AND log_date <= ? ORDER BY log_date ASC""",
+        (user_id, *labels, max_date),
     ) as cur:
         return list(await cur.fetchall())
 
@@ -225,6 +237,35 @@ async def set_flag(db: aiosqlite.Connection, user_id: str, log_date: str, flag: 
         (user_id, log_date, flag, _iso(at)),
     )
     await db.commit()
+
+
+async def touch_flag(db: aiosqlite.Connection, user_id: str, log_date: str, flag: str, at: datetime) -> None:
+    """Set flag SAMBIL memperbarui `set_at` — untuk reminder berjenjang yang
+    perlu tahu kapan pengiriman terakhir (flag_exists saja tidak cukup)."""
+    await db.execute(
+        """INSERT INTO notify_flags (user_id, log_date, flag, set_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, log_date, flag) DO UPDATE SET set_at = excluded.set_at""",
+        (user_id, log_date, flag, _iso(at)),
+    )
+    await db.commit()
+
+
+async def flag_set_at(
+    db: aiosqlite.Connection, user_id: str, log_date: str, flag: str
+) -> datetime | None:
+    """Kapan flag terakhir di-set; None bila belum pernah."""
+    async with db.execute(
+        "SELECT set_at FROM notify_flags WHERE user_id = ? AND log_date = ? AND flag = ?",
+        (user_id, log_date, flag),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    try:
+        return datetime.fromisoformat(row["set_at"])
+    except (TypeError, ValueError):
+        return None
 
 
 # --- event log ----------------------------------------------------------------

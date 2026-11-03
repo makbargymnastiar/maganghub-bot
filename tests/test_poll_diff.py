@@ -105,7 +105,8 @@ async def test_perubahan_status_hanya_mengirim_satu_pesan(ctx):
 
     assert result.changes == [("2026-11-03", "APPROVED")]
     assert len(tg.messages) == 1
-    assert "Hadir disetujui" in tg.messages[0]
+    assert "Hadir Disetujui" in tg.messages[0]
+    assert "Catatan mentor: <i>-</i>" in tg.messages[0]
 
     # siklus berikutnya tanpa perubahan -> tidak ada pesan baru
     await run_poll(database, settings, user, FakeMonevClient(approved), now=TODAY, notify=tg)

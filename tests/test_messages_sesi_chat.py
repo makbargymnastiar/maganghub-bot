@@ -1,4 +1,4 @@
-"""Uji alur notifikasi pengisian + perenderan pesan Telegram."""
+"""Uji kalimat sesi (token/cookie) & chat (/help, panduan, balasan perintah)."""
 
 import base64
 import json
@@ -7,28 +7,16 @@ from datetime import datetime
 import pytest
 
 from bot import store
-from bot.api import endpoints
-from bot.api.client import MonevError, TokenRejected
-from bot.jobs.poll import run_poll
-from bot.status import APPROVED, PARTIAL
-from bot.tg import format as fmt
-from bot.tg.commands import BotContext, apply_token, dispatch
-from tests.test_poll_diff import FakeMonevClient, FakeTelegram, make_payloads
+from bot.monev import endpoints
+from bot.monev.client import MonevError, TokenRejected
+from bot.messages import chat, sesi
+from bot.telegram.commands import BotContext, apply_token, dispatch
+from tests.test_poll_diff import FakeTelegram
 
 TODAY = datetime.fromisoformat("2026-11-03T10:00:00+07:00")
 
 BODY = base64.urlsafe_b64encode(json.dumps({"ttl": 21600, "user": "u1"}).encode()).decode().rstrip("=")
 JWT_SAMPLE = f"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.{BODY}.rantai-sinyur-panjang"
-
-ATT = {"date": "2026-11-03", "status": "PRESENT", "approval_status": None}
-FULL = {"activity_log": "Merakit PC", "lesson_learned": "Belajar subnetting", "obstacles": "Kabel kurang"}
-
-
-def daily(**content) -> dict:
-    """Satu baris daily-log dengan tiga isian kosong, lalu ditimpa `content`."""
-    base = {"date": "2026-11-03", "state": "DRAFT", "id": 7, "activity_log": "", "lesson_learned": "", "obstacles": ""}
-    base.update(content)
-    return base
 
 
 @pytest.fixture
@@ -49,53 +37,6 @@ async def ctx(tmp_path):
     user = await store.ensure_user(database, settings, name="Tester")
     yield settings, database, user
     await database.close()
-
-
-async def poll_once(database, settings, user, log, notify):
-    await run_poll(
-        database, settings, user, FakeMonevClient(make_payloads(attendance=ATT, log=log)), now=TODAY, notify=notify
-    )
-
-
-async def test_alur_pengisian_mengirim_pesan_berjenjang(ctx):
-    """Konsep inti user: diingatkan selama belum lengkap, dilapor saat sudah diisi."""
-    settings, database, user = ctx
-    tg = FakeTelegram()
-
-    await poll_once(database, settings, user, daily(), tg)
-    assert tg.messages == []  # siklus pertama = seed, tidak spam
-
-    await poll_once(database, settings, user, daily(activity_log="Merakit PC"), tg)
-    assert "Sebagian Terisi" in tg.messages[-1]
-    assert "Masih kosong: pembelajaran, kendala" in tg.messages[-1]
-
-    # tambah satu kolom lagi: label tetap PARTIAL -> sengaja tidak pesan baru (anti spam)
-    count = len(tg.messages)
-    await poll_once(database, settings, user, daily(activity_log="Merakit PC", lesson_learned="Belajar subnetting"), tg)
-    assert len(tg.messages) == count
-
-    await poll_once(database, settings, user, daily(**FULL), tg)
-    assert "Sudah Diisi, Belum Dikirim" in tg.messages[-1]
-
-    await poll_once(database, settings, user, daily(state="COMPLETED", **FULL), tg)
-    assert "Menunggu Persetujuan" in tg.messages[-1]
-
-    # isian yang sama tidak diulang
-    before = len(tg.messages)
-    await poll_once(database, settings, user, daily(state="COMPLETED", **FULL), tg)
-    assert len(tg.messages) == before
-
-
-async def test_pesan_revisi_membawa_catatan_mentor(ctx):
-    settings, database, user = ctx
-    tg = FakeTelegram()
-    await poll_once(database, settings, user, daily(state="COMPLETED", **FULL), tg)
-
-    revision = daily(state="NEEDS_REVISION", reviewer_notes="Bagian jaringan belum rinci", **FULL)
-    await poll_once(database, settings, user, revision, tg)
-
-    assert "Perlu Tindakan Anda" in tg.messages[-1]
-    assert "Catatan mentor: Bagian jaringan belum rinci" in tg.messages[-1]
 
 
 async def test_koneksi_gagal_tidak_dituduh_sebagai_token_salah(ctx, monkeypatch):
@@ -145,23 +86,6 @@ async def test_bukan_jwt_tidak_dicoba_ke_api(ctx, monkeypatch):
     assert calls == []
 
 
-def test_pesan_reminder_jujur_untuk_status_yang_tidak_ditagih():
-    nag = fmt.reminder_message("evening", "2026-11-03", PARTIAL)
-    assert "belum lengkap" in nag
-    assert "Lengkapi isian yang masih kosong" in nag
-
-    calm = fmt.reminder_message("evening", "2026-11-03", APPROVED)
-    assert "belum lengkap" not in calm
-    assert "status tercatat" in calm
-
-
-def test_help_text_menyebut_tiga_isian():
-    text = fmt.help_text("monev_bot")
-    for word in ("aktivitas", "pembelajaran", "kendala", "Sudah Diisi"):
-        assert word in text
-    assert "/panduan" in text
-
-
 async def test_token_kosong_mengirim_panduan_bukan_error(ctx):
     """/token tanpa tempelan token = user lupa; jawabnya panduan, bukan teguran."""
     settings, database, user = ctx
@@ -188,7 +112,17 @@ async def test_panduan_lewat_dispatch_dan_muat_di_telegram(ctx):
 
 
 def test_pesan_token_kedaluwarsa_mengandung_langkah_dan_escaping():
-    rendered = fmt.token_expired_message("token ditolak server (HTTP <401>)")
+    rendered = sesi.token_expired_message("token ditolak server (HTTP <401>)")
     assert "&lt;401&gt;" in rendered
     assert "F12" in rendered and "Console" in rendered
     assert "/token" in rendered
+
+
+def test_help_text_akhir_zaman():
+    text = chat.help_text("monev_bot")
+    for word in ("aktivitas", "pembelajaran", "kendala", "/panduan", "/cookie"):
+        assert word in text
+    # /reminder sudah dibuang — pengingat terkunci
+    assert "/reminder" not in text
+    assert "terkunci" in text
+    assert "18:00–20:59" in text and "uang saku" in text

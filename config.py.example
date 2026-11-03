@@ -26,9 +26,8 @@ MONEV_REFRESH_TOKEN = ""
 TZ_NAME = "Asia/Jakarta"
 # Seberapa sering bot memantau status (menit). 15 = status ACC dikirim lebih cepat.
 POLL_MINUTES = 15
-REMINDER_EVENING = "18:00"
-REMINDER_FOLLOWUP = "21:00"
-REMINDER_EMERGENCY = "23:00"
+# Jadwal pengingat harian SENGAJA tidak dikonfigurasi di sini — terkunci di
+# bot/jobs/reminders.py (16:55, berjenjang 18:00-23:59, dan paket pagi 08:00).
 DB_PATH = "data/bot.db"
 LOG_LEVEL = "INFO"
 

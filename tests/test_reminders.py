@@ -1,79 +1,224 @@
-"""Uji penjadwalan reminder — regression untuk bug spam 23:00 & state tertimpa."""
+"""Uji jadwal pengingat TERKUNCI — berjenjang, jendela, dan interval antar-kirim."""
 
 from datetime import datetime, time as dtime
 
+from bot import db as dbmod
+from bot import store
 from bot.jobs.reminders import (
-    FLAG_EMERGENCY,
-    FLAG_EVENING,
-    FLAG_FOLLOWUP,
-    NAGGABLE,
-    ReminderTimes,
-    plan_reminders,
+    MISSED_WINDOW,
+    MORNING_WINDOW,
+    REVISION_AFTER_HOURS,
+    SORE_WINDOW,
+    TIERS,
+    current_tier,
+    in_window,
+    interval_due,
     revision_followup_due,
-    superseded_flags,
+    run_reminders,
 )
+from bot.settings import load_settings
 
 TZ = "+07:00"
-TIMES = ReminderTimes(evening=dtime(18, 0), followup=dtime(21, 0), emergency=dtime(23, 0))
 
 
-def at(hour: int, minute: int = 0) -> datetime:
-    return datetime.fromisoformat(f"2026-11-03T{hour:02d}:{minute:02d}:00{TZ}")
+def at(hour: int, minute: int = 0, day: str = "2026-11-03") -> datetime:
+    return datetime.fromisoformat(f"{day}T{hour:02d}:{minute:02d}:00{TZ}")
 
 
-def test_status_sudah_diisi_tidak_ditagih():
-    for key in ("APPROVED", "PENDING_REVIEW", "REVISION_SUBMITTED", "HOLIDAY", "ABSENT", "REJECTED"):
-        assert plan_reminders(at(23, 30), key, set(), TIMES) == []
+def clock(hour: int, minute: int = 0) -> dtime:
+    return dtime(hour, minute)
 
 
-def test_hanya_status_belum_lengkap_yang_ditagih():
-    assert NAGGABLE == {"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"}
+def test_tier_berjenjang_sesuai_jam_yang_disetujui():
+    assert current_tier(clock(17, 59)) is None
+    assert current_tier(clock(18, 0)).flag == "rem_soft"
+    assert current_tier(clock(20, 59)).flag == "rem_soft"
+    assert current_tier(clock(21, 0)).flag == "rem_rawan"
+    assert current_tier(clock(23, 29)).flag == "rem_rawan"
+    assert current_tier(clock(23, 30)).flag == "rem_dekat"
+    assert current_tier(clock(23, 45)).flag == "rem_dekat"
+    assert current_tier(clock(23, 46)).flag == "rem_mepet"
+    assert current_tier(clock(23, 59)).flag == "rem_mepet"
+    assert current_tier(clock(0, 30)) is None
 
 
-def test_sudah_diisi_tapi_belum_dikirim_tetap_ditagih():
-    """Isi lengkap tapi tombol kirim belum ditekan = masih harus diingatkan."""
-    assert plan_reminders(at(18, 0), "FILLED_NOT_SUBMITTED", set(), TIMES) == [(FLAG_EVENING, "evening")]
-    assert plan_reminders(at(18, 0), "PARTIAL", set(), TIMES) == [(FLAG_EVENING, "evening")]
+def test_interval_tier_terkunci():
+    assert tuple(t.every_min for t in TIERS) == (30, 15, 5, 3)
 
 
-def test_sebelum_jam_sore_tidak_ada_reminder():
-    assert plan_reminders(at(17, 59), "EMPTY", set(), TIMES) == []
+def test_jendela_pembantu():
+    assert in_window(clock(16, 55), *SORE_WINDOW) is True
+    assert in_window(clock(17, 5), *SORE_WINDOW) is True
+    assert in_window(clock(17, 6), *SORE_WINDOW) is False
+    assert in_window(clock(0, 1), *MISSED_WINDOW) is True
+    assert in_window(clock(8, 0), *MORNING_WINDOW) is True
+    assert in_window(clock(12, 0), *MORNING_WINDOW) is True
+    assert in_window(clock(13, 0), *MORNING_WINDOW) is False
 
 
-def test_jam_sore_kirim_satu_kali():
-    assert plan_reminders(at(18, 0), "EMPTY", set(), TIMES) == [(FLAG_EVENING, "evening")]
-    assert plan_reminders(at(18, 5), "EMPTY", {FLAG_EVENING}, TIMES) == []
+def test_interval_due_pertama_kali_selalu_ya():
+    assert interval_due(None, at(18, 0), 30) is True
 
 
-def test_darurat_punya_flag_sendiri():
-    """Regression: versi lama mengirim 'DARURAT' tiap 3 menit karena tanpa flag."""
-    assert plan_reminders(at(23, 0), "EMPTY", {FLAG_EVENING, FLAG_FOLLOWUP}, TIMES) == [
-        (FLAG_EMERGENCY, "emergency")
-    ]
-    assert plan_reminders(at(23, 3), "EMPTY", {FLAG_EVENING, FLAG_FOLLOWUP, FLAG_EMERGENCY}, TIMES) == []
-    assert plan_reminders(at(23, 9), "EMPTY", {FLAG_EMERGENCY}, TIMES) == []
+def test_interval_due_hanya_setelah_selang_waktu():
+    assert interval_due(at(18, 0), at(18, 29), 30) is False
+    assert interval_due(at(18, 0), at(18, 30), 30) is True
 
 
-def test_bot_baru_jalan_malam_hanya_kirim_satu_pesan():
-    planned = plan_reminders(at(23, 40), "EMPTY", set(), TIMES)
-    assert len(planned) == 1
-    assert planned[0][0] == FLAG_EMERGENCY
+def test_interval_due_toleransi_db_naive():
+    """set_at di DB tersimpan tanpa tz — jangan sampai perbandingan crash."""
+    assert interval_due(datetime(2026, 11, 3, 18, 0), at(18, 31), 30) is True
 
 
-def test_flag_tingkatan_bawah_ikut_ditandai():
-    assert set(superseded_flags(FLAG_EMERGENCY, TIMES, at(23, 40).timetz().replace(tzinfo=None))) == {
-        FLAG_EVENING,
-        FLAG_FOLLOWUP,
-    }
-    assert superseded_flags(FLAG_EVENING, TIMES, at(18, 10).timetz().replace(tzinfo=None)) == []
-
-
-def test_reminder_uraian_kosong_tetap_dikirim():
-    assert plan_reminders(at(19, 0), "ATTENDED_NO_LOG", set(), TIMES) == [(FLAG_EVENING, "evening")]
-
-
-def test_followup_revisi_setelah_enam_jam():
+def test_followup_revisi_setelah_delapan_jam():
+    assert REVISION_AFTER_HOURS == 8
     first_seen = at(9, 0)
-    assert revision_followup_due(at(14, 0), first_seen) is False
-    assert revision_followup_due(at(15, 0), first_seen) is True
-    assert revision_followup_due(at(15, 0), None) is False
+    assert revision_followup_due(at(16, 59), first_seen) is False
+    assert revision_followup_due(at(17, 0), first_seen) is True
+    assert revision_followup_due(at(17, 0), None) is False
+
+
+# --- integrasi: run_reminders dengan DB nyata + notify tiruan ------------------
+
+
+class Notify:
+    def __init__(self):
+        self.messages: list[tuple[str, str]] = []
+
+    async def send_message(self, chat_id, text, **kwargs):
+        self.messages.append((str(chat_id), text))
+        return {"ok": True}
+
+
+async def make_env(tmp_path, today: str, label: str, name: str = "bot.db"):
+    settings = load_settings(
+        {
+            "TELEGRAM_BOT_TOKEN": "x",
+            "TELEGRAM_CHAT_ID": "111",
+            "PARTICIPANT_ID": "p1",
+            "DB_PATH": str(tmp_path / name),
+        }
+    )
+    database = await dbmod.connect(settings.db_path)
+    user = await store.ensure_user(database, settings, name="Tester")
+    noon = datetime.fromisoformat(f"{today}T07:00:00{TZ}")
+    await store.upsert_day_state(database, user.tg_chat_id, today, label, {}, noon)
+    return settings, user, database
+
+
+async def test_berjenjang_kirim_lalu_hening_sampai_selang_waktu(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "PARTIAL")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(18, 0))
+        assert sent == ["rem_soft"]
+        assert "Pengingat Absensi" in tg.messages[-1][1]
+        # tick berikutnya dalam menit yang sama / sebelum 30 menit → diam
+        assert await run_reminders(db, settings, user, tg, now=at(18, 29)) == []
+        assert await run_reminders(db, settings, user, tg, now=at(18, 30)) == ["rem_soft"]
+    finally:
+        await db.close()
+
+
+async def test_status_lengkap_tidak_ditagih(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "PENDING_REVIEW")
+    tg = Notify()
+    try:
+        assert await run_reminders(db, settings, user, tg, now=at(21, 0)) == []
+    finally:
+        await db.close()
+
+
+async def test_cek_sore_dua_kondisi_sekali_sehari(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "EMPTY")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(16, 55))
+        assert sent == ["sore_check"]
+        assert "belum lengkap" in tg.messages[-1][1]
+        assert await run_reminders(db, settings, user, tg, now=at(17, 0)) == []
+    finally:
+        await db.close()
+
+    settings, user, db = await make_env(tmp_path, "2026-11-04", "APPROVED", name="bot2.db")
+    tg = Notify()
+    try:
+        await run_reminders(db, settings, user, tg, now=at(16, 56, day="2026-11-04"))
+        assert "sudah terisi lengkap" in tg.messages[-1][1]
+    finally:
+        await db.close()
+
+
+async def test_kemarin_terlewat_sekali_saja(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "EMPTY")
+    await store.upsert_day_state(db, user.tg_chat_id, "2026-11-02", "PARTIAL", {}, at(7, 0))
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(0, 30))
+        assert "missed_yesterday" in sent
+        assert "Kemarin Terlewat" in tg.messages[-1][1]
+        assert await run_reminders(db, settings, user, tg, now=at(1, 0)) == []
+    finally:
+        await db.close()
+
+
+async def test_paket_libur_akhir_pekan(tmp_path):
+    # 2026-11-07 = Sabtu
+    settings, user, db = await make_env(tmp_path, "2026-11-07", "EMPTY")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-07"))
+        assert "day_off" in sent
+        assert "Hari Ini Libur" in tg.messages[0][1]
+        assert "akhir pekan" in tg.messages[0][1]
+        assert await run_reminders(db, settings, user, tg, now=at(9, 0, day="2026-11-07")) == []
+    finally:
+        await db.close()
+
+
+async def test_tagihan_acc_lima_hari(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "PARTIAL")
+    for d in ("2026-10-27", "2026-10-28", "2026-11-01"):
+        await store.upsert_day_state(db, user.tg_chat_id, d, "PENDING_REVIEW", {}, at(7, 0))
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0))
+        assert "pending_tagihan" in sent
+        text = next(t for _, t in tg.messages if "Menunggu ACC Mentor" in t)
+        # hanya 27 & 28 Okt yang berusia ≥5 hari per 3 Nov; 01 Nov belum cukup tua
+        assert "27 Okt" in text and "28 Okt" in text and "01 Nov" not in text
+        assert "sudah 7 hari" in text
+    finally:
+        await db.close()
+
+
+async def test_tagihan_belum_lima_hari_diam(tmp_path):
+    settings, user, db = await make_env(tmp_path, "2026-11-03", "PARTIAL")
+    await store.upsert_day_state(db, user.tg_chat_id, "2026-11-01", "PENDING_REVIEW", {}, at(7, 0))
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0))
+        assert "pending_tagihan" not in sent
+    finally:
+        await db.close()
+
+
+async def test_eval_h_minus_dan_uang_saku(tmp_path):
+    # 2026-11-05 → H-4 evaluasi; 2026-11-09 → hari pengajuan
+    settings, user, db = await make_env(tmp_path, "2026-11-05", "PARTIAL")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-05"))
+        assert "eval_reminder" in sent
+        assert "H-4" in next(t for _, t in tg.messages if "Evaluasi Magang" in t)
+    finally:
+        await db.close()
+
+    settings, user, db = await make_env(tmp_path, "2026-11-09", "PARTIAL")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-09"))
+        assert "stipend" in sent
+        assert "Pengajuan Uang Saku" in next(t for _, t in tg.messages if "Uang Saku" in t)
+    finally:
+        await db.close()

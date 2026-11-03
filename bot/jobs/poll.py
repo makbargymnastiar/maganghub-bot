@@ -19,12 +19,12 @@ from typing import Any
 import aiosqlite
 
 from .. import store
-from ..api import endpoints
-from ..api.client import MonevClient
+from ..messages import absensi
+from ..monev import endpoints
+from ..monev.client import MonevClient
 from ..models import DayRecord, User
+from ..monev.status import UNKNOWN, Label, resolve, unknown_detail
 from ..settings import Settings
-from ..status import UNKNOWN, Label, pending_detail, resolve, unknown_detail
-from ..tg import format as fmt
 
 log = logging.getLogger("bot.poll")
 
@@ -171,14 +171,16 @@ async def run_poll(
                 await store.set_flag(db, user.tg_chat_id, record.date, "unknown_notified", now)
                 if notify is not None:
                     await notify.send_message(
-                        user.tg_chat_id, fmt.unknown_status_message(unknown_detail(record), record.date)
+                        user.tg_chat_id,
+                        absensi.unknown_status_message(unknown_detail(record), record.date),
                     )
                 result.changes.append((record.date, label.key))
             continue
 
         if notify is not None:
             await notify.send_message(
-                user.tg_chat_id, fmt.status_change(label, record.date, extra=pending_detail(record))
+                user.tg_chat_id,
+                absensi.status_change_message(label, record.date, record.reviewer_notes),
             )
         result.changes.append((record.date, label.key))
         log.info("status %s -> %s (%s)", previous, label.key, record.date)

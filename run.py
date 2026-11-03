@@ -19,15 +19,15 @@ from datetime import timedelta
 
 from bot import db as dbmod
 from bot import store
-from bot.api.client import MonevError, TokenRejected
 from bot.jobs import token_health
 from bot.jobs.announcements import run_info_job
 from bot.jobs.reminders import run_reminders
+from bot.monev.client import MonevError, TokenRejected
 from bot.settings import load_settings
-from bot.tg.api import TelegramClient
-from bot.tg.commands import BotContext, apply_cookie, apply_token, dispatch, poll_auto
+from bot.telegram.api import TelegramClient
+from bot.telegram.commands import BotContext, apply_cookie, apply_token, dispatch, poll_auto
 
-REMINDER_EVERY = timedelta(minutes=5)
+REMINDER_EVERY = timedelta(minutes=1)  # jadwal terkunci butuh tick menit (tier 3 menit)
 TOKEN_HEALTH_EVERY = timedelta(minutes=30)
 INFO_EVERY = timedelta(hours=6)
 
@@ -71,11 +71,11 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
         if now >= next_reminder:
             next_reminder = now + REMINDER_EVERY
             user = await ctx.user()
-            if not user.token_invalid and user.reminders_on:
-                try:
-                    await run_reminders(ctx.db, settings, user, ctx.tg, now=now)
-                except Exception:  # noqa: BLE001
-                    logging.exception("job reminder gagal")
+            # Jadwal pengingat terkunci: selalu jalan, tidak bisa dimatikan dari chat.
+            try:
+                await run_reminders(ctx.db, settings, user, ctx.tg, now=now)
+            except Exception:  # noqa: BLE001
+                logging.exception("job reminder gagal")
 
         if now >= next_token:
             next_token = now + TOKEN_HEALTH_EVERY

@@ -21,21 +21,28 @@ bot/
   db.py               skema SQLite (users, day_state, notify_flags, event_log, settings)
   store.py            seluruh query; satu-satunya modul yang menyentuh SQL
   models.py           User, DayRecord
-  status.py           PETA STATUS — port fungsi i(e, t, r) dari frontend monev
-  api/
+  monev/
+    status.py         PETA STATUS — port fungsi i(e, t, r) dari frontend monev
     client.py         httpx + retry + pemisahan TokenRejected (401/403) vs error lain
     endpoints.py      home, attendances, daily-logs, absence-warnings, announcements, system/time, users/me
     b64.py            dekode response base64 (announcements)
     jwt_utils.py      baca klaim ttl/fingerprint (token monev tidak punya `exp`)
+  messages/           SEMUA kalimat pesan, dipecah per topik (tanpa logika)
+    base.py           esc(), pretty_date(), short_date() (hari/bulan bahasa Indonesia)
+    absensi.py        notif perubahan status + catatan mentor + pengumuman/warning
+    pengisian.py      pengingat berjenjang (soft/rawan/dekat/mepet) + cek sore + terlewat
+    harian.py        paket pagi: libur hari ini, evaluasi H-7, pengajuan uang saku
+    tagihan.py        tagihan absensi belum di-ACC ≥5 hari
+    sesi.py           token/cookie: panduan, kedaluwarsa, tersimpan, ditolak
+    chat.py           /help, /start, /status, /cek, dan balasan perintah lain
   jobs/
     poll.py           gabung 3 endpoint, deteksi perubahan, kirim notifikasi
-    reminders.py      pengingat 18:00 / 21:00 / 23:00 + tindak lanjut revisi
+    reminders.py      JADWAL TERKUNCI: 16:55 + berjenjang 18:00–23:59 + paket pagi 08:00
     token_health.py   peringatan H-30 menit, deteksi 401, auto-refresh via cookie
     announcements.py  pengumuman + warning keterlambatan dari portal
-  tg/
+  telegram/
     api.py            wrapper Bot API (getUpdates/sendMessage), tanpa library eksternal
-    commands.py       dispatch perintah + BotContext
-    format.py         perender pesan HTML (semua data API di-escape)
+    commands.py       dispatch perintah + BotContext (kalimat diambil dari bot/messages/)
 scripts/probe_api.py  alat live: panggil API, cetak status hasil pemetaan
 tools/bookmarklet.md  panduan langkah-demi-langkah mengambil & mengisi token
 ```
@@ -45,12 +52,13 @@ tools/bookmarklet.md  panduan langkah-demi-langkah mengambil & mengisi token
 Yang dikejar bot ini adalah **tiga isian harian di portal**: `activity_log`
 (aktivitas), `lesson_learned` (pembelajaran), `obstacles` (kendala) — nama kolom
 terkonfirmasi dari response `/api/v1/daily-logs`. Selama ketiganya belum lengkap,
-status masih ditagih reminder; begitu lengkap, bot mengirim "Sudah Diisi".
+status masih ditagih pengingat; begitu lengkap, portal langsung menandainya
+terkirim (tidak ada tahap "belum dikirim"), lalu bot mengirim "Menunggu ACC Mentor".
 
 Frontend monev menggabungkan **dua** objek untuk melabeli satu tanggal:
 `attendance` (`status`, `approval_status`) dan `daily-log` (`state`). Versi lama
 hanya membaca daily-log, sehingga label yang bergantung pada kehadiran tidak
-pernah aktif. `bot/status.py` menata ulang urutan pengecekan seperti frontend:
+pernah aktif. `bot/monev/status.py` menata ulang urutan pengecekan seperti frontend:
 `DAYOFF` → `ABSENT` → `NEEDS_REVISION` → `REJECTED` → `REVISION_SUBMITTED` →
 `COMPLETED` → kelengkapan isian → `APPROVED` → `SUBMITTED` → fallback.
 
@@ -58,19 +66,18 @@ Satu **deviasi sadar** dari frontend: frontend sudah menulis "Hadir disetujui"
 begitu `attendance.approval_status == APPROVED`, padahal uraian harian boleh jadi
 masih kosong. Untuk bot pengingat, ACC kehadiran tidak dianggap menyelesaikan
 pekerjaan hari itu — jadi isian yang belum lengkap tetap ditandai
-🔵/🟡/🟣 (hari izin `ON_LEAVE` dikecualikan, karena tidak ada uraian yang ditagih).
+🔵/🟡 (hari izin `ON_LEAVE` dikecualikan, karena tidak ada uraian yang ditagih).
 
-| Label | Emoji | Arti | Ditagih reminder? |
+| Label | Emoji | Arti | Ditagih pengingat? |
 | --- | --- | --- | --- |
 | Belum Diisi | ⚪ | belum ada absensi & laporan | ya |
 | Sudah Absen, Uraian Belum Diisi | 🔵 | kehadiran tercatat, isi masih kosong | ya |
 | Sebagian Terisi | 🟡 | 1–2 dari 3 kolom terisi (yang kosong disebutkan) | ya |
-| Sudah Diisi, Belum Dikirim | 🟣 | tiga kolom lengkap, tombol kirim belum ditekan | ya |
-| Menunggu Persetujuan | 📝 | terkirim, tunggu ACC mentor | tidak |
-| Perlu Tindakan Anda | 🟠 | mentor minta revisi (+ catatan dikirim bila ada) | tidak |
+| Menunggu ACC Mentor | 📝 | lengkap/terkirim, tunggu ACC mentor | tidak |
+| Perlu Revisi | 🟠 | mentor minta revisi (+ catatan dikirim bila ada) | tidak |
 | Perbaikan Menunggu Peninjauan | ⏳ | revisi sudah dikirim | tidak |
 | Hadir/Izin disetujui | ✅ / 🟢 | final | tidak |
-| Kehadiran Ditolak / Tidak Hadir | ❌ / ⛔ | perlu cek portal | tidak |
+| Ditolak / Tidak Hadir | ❌ / ⛔ | perlu cek portal | tidak |
 | Hari Libur | 🗓️ | `DAYOFF` atau penanda libur dari `/home` | tidak |
 | Status Tidak Dikenal | ❔ | enum baru dari portal; bot kirim klaim mentahnya | tidak |
 
@@ -81,7 +88,29 @@ supaya mapping bisa dikalibrasi, bukan didiamkan.
 **Kapan pesan dikirim?** Hanya saat label sebuah tanggal **berubah** (satu pesan per
 perubahan, state tersimpan di DB). Menambah satu kolom isian sambil tetap berstatus
 🟡 Sebagian Terisi tidak mengirim pesan baru — anti-spam; yang dikirim adalah
-pesan berikutnya saat status naik ke 🟣 / 📝 / ✅.
+pesan berikutnya saat status naik ke 📝 / ✅.
+
+## Jadwal pengingat (terkunci)
+
+Penjadwal memanggil `bot/jobs/reminders.py` tiap 1 menit. Jadwalnya **sengaja
+terkunci** — tidak bisa diubah atau dimatikan dari chat, karena ini pengingat
+penting. Semua kalimat aslinya ada di `bot/messages/pengisian.py`, `harian.py`,
+dan `tagihan.py`.
+
+| Jam | Isi | Frekuensi |
+| --- | --- | --- |
+| 16:55 | Cek sore — menagih yang belum / menandai yang sudah diisi | 1x sehari |
+| 18:00–20:59 | Pengingat lunak selama isian belum lengkap | tiap 30 menit |
+| 21:00–23:29 | Jam rawan — nada lebih tegas | tiap 15 menit |
+| 23:30–23:45 | Mendekati tenggat | tiap 5 menit |
+| 23:46–23:59 | Menit-menit terakhir | tiap 3 menit |
+| 00:01–06:00 | Laporan kemarin terlewat | 1x |
+| 08:00–11:59 | Paket pagi: info libur, tagihan ACC ≥5 hari, evaluasi H-7 (tgl 2–8), uang saku (tgl 9) | 1x per item |
+
+Tier malam hanya jalan selama status masih layak ditagih (`EMPTY`/`ATTENDED_NO_LOG`/`PARTIAL`).
+Ketelitian menit diambil dari selisih waktu `set_at` flag per tier, bukan dari jumlah
+thread; tiap "sekali sehari" dijamin flag unik di `notify_flags` sehingga restart di
+tengah hari tidak mengulang pesan yang sudah terkirim.
 
 ## Mengisi token lewat Telegram
 
@@ -161,11 +190,13 @@ chmod 600 config.py
 | `MONEV_REFRESH_TOKEN` | kosong | cookie `monev_refresh_token`; setelah itu cukup lewat `/cookie` |
 | `MONEV_WEB_URL` | `https://monev.maganghub.kemnaker.go.id` | origin SPA untuk `version.json` (header build id) |
 | `TOKEN_REFRESH_LEAD_MINUTES` | `90` | mulai refresh saat sisa umur token di bawah selang ini |
-| `TZ_NAME` | `Asia/Jakarta` | zona waktu untuk reminder & "hari ini" |
+| `TZ_NAME` | `Asia/Jakarta` | zona waktu untuk pengingat & "hari ini" |
 | `POLL_MINUTES` | `15` | minimum 5; bisa diubah runtime lewat `/interval` |
-| `REMINDER_EVENING` / `_FOLLOWUP` / `_EMERGENCY` | `18:00` / `21:00` / `23:00` | jam pengingat |
 | `DB_PATH` | `data/bot.db` | SQLite |
 | `LOG_LEVEL` | `INFO` | |
+
+> Jadwal pengingat harian **sengaja tidak dibuat configurable** — terkunci di
+> `bot/jobs/reminders.py` dan tidak bisa diubah/dimatikan dari chat.
 
 `config.py`, `data/`, `state.json`, dan file HAR/`download` sudah di-gitignore
 (kandungannya berisi token).
@@ -196,7 +227,6 @@ sudo journalctl -fu monev-bot
 | `/cek` | paksa polling sekarang, laporkan perubahan |
 | `/token <Bearer …>` | ganti token sesi (divalidasi dulu ke API) |
 | `/tokeninfo` | token aktif?, sisa umur, fingerprint sesi |
-| `/reminder on\|off` | hidupkan/matikan pengingat harian |
 | `/interval <menit>` | ubah frekuensi polling (min 5, tersimpan di DB) |
 | `/log [n]` | n event terakhir |
 | `/help` | daftar perintah |
@@ -208,7 +238,7 @@ Token juga diterima tanpa perintah: cukup tempel string `eyJ0eXAi…`.
 Sesi monev berlaku ±6 jam (`ttl: 21600`) dan **login baru membatalkan sesi lama** —
 token yang berumur 2 jam bisa sudah 401 begitu Anda login ulang di HP. Karena itu:
 
-1. bot menandai `token_invalid`, berhenti polling/reminder (tidak mengirim pesan dari data basi),
+1. bot menandai `token_invalid`, berhenti polling/pengingat (tidak mengirim pesan dari data basi),
 2. mengirim instruksi penggantian token sekali per hari (bukan tiap 15 menit),
 3. lanjut otomatis begitu token baru masuk — tanpa restart service.
 
@@ -217,7 +247,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 69 test: status mapping, alur notifikasi, reminder, auto-refresh, b64/JWT/settings
+python -m pytest -q                # 89 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, kalimat pesan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 ```

@@ -20,12 +20,12 @@ from typing import Any
 import aiosqlite
 
 from .. import store
-from ..api import endpoints
-from ..api.client import MonevClient, MonevError, TokenRejected
-from ..api.jwt_utils import fingerprint, ttl_seconds
+from ..messages import sesi
+from ..monev import endpoints
+from ..monev.client import MonevClient, MonevError, TokenRejected
+from ..monev.jwt_utils import fingerprint, ttl_seconds
 from ..models import User
 from ..settings import Settings, mask_token, normalize_cookie
-from ..tg import format as fmt
 
 log = logging.getLogger("bot.token")
 
@@ -64,7 +64,7 @@ async def run_token_health(
         return False
 
     await store.set_flag(db, user.tg_chat_id, today, FLAG_TOKEN_WARNING, now)
-    await notify.send_message(user.tg_chat_id, fmt.token_warning_message(max(left, 0)))
+    await notify.send_message(user.tg_chat_id, sesi.token_warning_message(max(left, 0)))
     await store.add_event(
         db, user.tg_chat_id, today, "", "", store.KIND_TOKEN, f"sisa umur token {left} menit", now
     )
@@ -88,7 +88,7 @@ async def mark_token_invalid(
     if await store.flag_exists(db, user.tg_chat_id, today, FLAG_TOKEN_ALERT):
         return
     await store.set_flag(db, user.tg_chat_id, today, FLAG_TOKEN_ALERT, now)
-    await notify.send_message(user.tg_chat_id, fmt.token_expired_message(reason))
+    await notify.send_message(user.tg_chat_id, sesi.token_expired_message(reason))
     await store.add_event(db, user.tg_chat_id, today, "", "", store.KIND_TOKEN, reason, now)
     log.warning("token user %s invalid: %s", mask_token(user.bearer_token), reason)
 
@@ -134,7 +134,7 @@ async def keepalive(
         # Cookie refresh mati/ganti sesi: manual mode lagi, cukup kabari sekali sehari.
         if not await store.flag_exists(db, user.tg_chat_id, today, FLAG_REFRESH_FAILED):
             await store.set_flag(db, user.tg_chat_id, today, FLAG_REFRESH_FAILED, now)
-            await notify.send_message(user.tg_chat_id, fmt.refresh_cookie_dead_message(str(exc)))
+            await notify.send_message(user.tg_chat_id, sesi.refresh_cookie_dead_message(str(exc)))
             await store.add_event(
                 db, user.tg_chat_id, today, "", "", store.KIND_TOKEN, f"refresh cookie mati: {exc}", now
             )

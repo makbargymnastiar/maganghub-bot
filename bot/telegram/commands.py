@@ -14,15 +14,16 @@ from typing import Any
 import aiosqlite
 
 from .. import store
-from ..api import endpoints
-from ..api.client import MonevClient, MonevError, TokenRejected
-from ..api.jwt_utils import fingerprint, looks_like_jwt, session_user, ttl_seconds
 from ..jobs import token_health
 from ..jobs.poll import PollResult, run_poll
+from ..messages import chat, sesi
+from ..messages.base import esc
+from ..monev import endpoints
+from ..monev.client import MonevClient, MonevError, TokenRejected
+from ..monev.jwt_utils import fingerprint, looks_like_jwt, session_user, ttl_seconds
+from ..monev.status import ALL_LABELS
 from ..models import User
 from ..settings import Settings, mask_token, normalize_cookie
-from ..status import ALL_LABELS
-from . import format as fmt
 from .api import TelegramClient
 
 log = logging.getLogger("bot.commands")
@@ -92,22 +93,22 @@ async def apply_token(ctx: BotContext, raw_token: str) -> str:
     """Simpan token setelah divalidasi ke API. Kembalikan pesan balasan (HTML)."""
     if not (raw_token or "").strip():
         # /token tanpa isi = user lupa menempel tokennya; kirim panduannya
-        return fmt.token_guide_text()
+        return sesi.token_guide_text()
     token = raw_token.strip().removeprefix("Bearer ").strip()
     if not looks_like_jwt(token):
-        return "❌ Itu bukan token JWT monev. Format: <code>/token Bearer eyJ0eXAi…</code>"
+        return chat.not_jwt_message()
 
     user = await ctx.user()
     probe = MonevClient(ctx.settings.base_url, token)
     try:
         home = await endpoints.fetch_home(probe)
     except TokenRejected as exc:
-        return fmt.token_rejected_message(exc.status, str(exc))
+        return sesi.token_rejected_message(exc.status, str(exc))
     except MonevError as exc:
         # status None = portal tidak bisa dihubungi, bukan token salah
         if exc.status is None:
-            return fmt.token_unreachable_message(str(exc))
-        return fmt.token_rejected_message(exc.status, str(exc))
+            return sesi.token_unreachable_message(str(exc))
+        return sesi.token_rejected_message(exc.status, str(exc))
     finally:
         await probe.close()
 
@@ -121,11 +122,10 @@ async def apply_token(ctx: BotContext, raw_token: str) -> str:
     await store.add_event(
         ctx.db, user.tg_chat_id, now.date().isoformat(), "", "", store.KIND_TOKEN, "token diperbarui", now
     )
-    today = now.date().isoformat()
     minutes = ttl_seconds(token) // 60
     await ctx.tg.send_message(
         user.tg_chat_id,
-        fmt.token_saved_message(mask_token(token), minutes, fingerprint(token)),
+        sesi.token_saved_message(mask_token(token), minutes, fingerprint(token)),
     )
     # token baru -> flag peringatan lama boleh diulang untuk hari berikutnya
     await ctx.db.execute(
@@ -133,8 +133,8 @@ async def apply_token(ctx: BotContext, raw_token: str) -> str:
         (user.tg_chat_id,),
     )
     await ctx.db.commit()
-    date_hint = home.get("date", today)
-    return f"🔑 Token aktif. Portal melaporkan tanggal <b>{fmt.esc(date_hint)}</b>."
+    date_hint = home.get("date", now.date().isoformat())
+    return chat.token_active_hint(date_hint)
 
 
 async def apply_cookie(ctx: BotContext, raw_cookie: str) -> str:
@@ -145,7 +145,7 @@ async def apply_cookie(ctx: BotContext, raw_cookie: str) -> str:
     konfigurasi lama tidak rusak.
     """
     if not (raw_cookie or "").strip():
-        return fmt.cookie_missing_message()
+        return sesi.cookie_missing_message()
 
     user = await ctx.user()
     probe = MonevClient(ctx.settings.base_url, user.bearer_token)
@@ -154,11 +154,11 @@ async def apply_cookie(ctx: BotContext, raw_cookie: str) -> str:
         build_id = await endpoints.fetch_frontend_build_id(probe, ctx.settings.web_url)
         token, rotated = await endpoints.refresh_access_token(probe, build_id=build_id)
     except TokenRejected as exc:
-        return fmt.refresh_cookie_dead_message(str(exc))
+        return sesi.refresh_cookie_dead_message(str(exc))
     except MonevError as exc:
         if exc.status is None:
-            return fmt.token_unreachable_message(str(exc))
-        return fmt.refresh_cookie_dead_message(str(exc))
+            return sesi.token_unreachable_message(str(exc))
+        return sesi.refresh_cookie_dead_message(str(exc))
     finally:
         await probe.close()
 
@@ -181,16 +181,13 @@ async def apply_cookie(ctx: BotContext, raw_cookie: str) -> str:
         (user.tg_chat_id,),
     )
     await ctx.db.commit()
-    return fmt.cookie_saved_message(mask_token(cookie.split("=", 1)[-1]), ttl_seconds(token) // 60)
+    return sesi.cookie_saved_message(mask_token(cookie.split("=", 1)[-1]), ttl_seconds(token) // 60)
 
 
 async def cmd_cek(ctx: BotContext, args: str = "") -> str:
     user = await ctx.user()
     if not user.bearer_token:
-        return (
-            "⚠️ Belum ada token. Kirim <code>/cookie &lt;monev_refresh_token&gt;</code> "
-            "(biar otomatis) atau <code>/token &lt;Bearer …&gt;</code>."
-        )
+        return chat.cek_no_token_message()
     try:
         result = await poll_auto(ctx)
     except TokenRejected as exc:
@@ -198,27 +195,23 @@ async def cmd_cek(ctx: BotContext, args: str = "") -> str:
         fresh = await store.get_user(ctx.db, user.tg_chat_id)
         if fresh:
             ctx.refresh_user_cache(fresh)
-        return "⚠️ Token ditolak server dan perpanjangan otomatis gagal. Cek <code>/tokeninfo</code>."
+        return chat.heal_failed_message()
     except MonevError as exc:
         await store.add_event(
             ctx.db, user.tg_chat_id, "", "", "", store.KIND_ERROR, str(exc), ctx.settings.now()
         )
-        return f"❌ Gagal memanggil API: {fmt.esc(exc)}"
+        return chat.api_error_message(str(exc))
 
     ctx.last_result = result
 
     if result.seeded:
-        return (
-            f"🌱 Baseline {len(result.notes)} tanggal tersimpan (tanpa notifikasi spam).\n"
-            f"Hari ini: <b>{fmt.esc(result.today_label.title if result.today_label else '-')}</b>"
+        return chat.cek_baseline_message(
+            len(result.notes), result.today_label.title if result.today_label else "-"
         )
     if not result.changes:
         label = result.today_label.title if result.today_label else "-"
-        return f"✅ Tidak ada perubahan. Status hari ini: <b>{fmt.esc(label)}</b>"
-    lines = [f"🔄 {len(result.changes)} perubahan tercatat:"]
-    for day, key in result.changes:
-        lines.append(f"• {fmt.pretty_date(day)} → {fmt.esc(ALL_LABELS.get(key).title if ALL_LABELS.get(key) else key)}")
-    return "\n".join(lines)
+        return chat.cek_no_change_message(label)
+    return chat.cek_changes_message(result.changes)
 
 
 async def cmd_status(ctx: BotContext, args: str = "") -> str:
@@ -232,7 +225,7 @@ async def cmd_status(ctx: BotContext, args: str = "") -> str:
     note = ""
     if user.token_invalid:
         note = "Token tidak aktif — data di bawah mungkin basi. Kirim /token baru."
-    return fmt.status_table(today, label, rows, note)
+    return chat.status_table(today, label, rows, note)
 
 
 async def cmd_tokeninfo(ctx: BotContext, args: str = "") -> str:
@@ -241,14 +234,14 @@ async def cmd_tokeninfo(ctx: BotContext, args: str = "") -> str:
     left = token_health.minutes_left(user, ctx.settings.now())
     lines = [
         "🔎 <b>Info token</b>",
-        f"Token: <code>{fmt.esc(mask_token(user.bearer_token))}</code>",
+        f"Token: <code>{esc(mask_token(user.bearer_token))}</code>",
         f"Status: {'❌ ditolak server' if user.token_invalid else '✅ aktif'}",
-        f"Fingerprint: <code>{fmt.esc(user.token_fingerprint[:12] or '-')}</code>",
-        f"user claim: <code>{fmt.esc(claims_user[:8] or '-')}</code>",
+        f"Fingerprint: <code>{esc(user.token_fingerprint[:12] or '-')}</code>",
+        f"user claim: <code>{esc(claims_user[:8] or '-')}</code>",
         f"Umur tersimpan: {user.token_ttl_seconds // 3600} jam",
     ]
     if user.token_saved_at:
-        lines.append(f"Disimpan: {fmt.esc(user.token_saved_at.strftime('%d-%m-%Y %H:%M'))} WIB")
+        lines.append(f"Disimpan: {esc(user.token_saved_at.strftime('%d-%m-%Y %H:%M'))} WIB")
     if left is not None:
         lines.append(f"Perkiraan sisa: {left} menit")
     else:
@@ -260,7 +253,7 @@ async def cmd_tokeninfo(ctx: BotContext, args: str = "") -> str:
             else ""
         )
         lines.append(
-            f"Auto-refresh: ✅ cookie <code>{fmt.esc(mask_token(user.refresh_cookie))}</code>{saved}"
+            f"Auto-refresh: ✅ cookie <code>{esc(mask_token(user.refresh_cookie))}</code>{saved}"
         )
         lines.append(f"Bot memperpanjang token sendiri saat sisa ≤ {ctx.settings.token_refresh_lead_minutes} menit.")
     else:
@@ -277,25 +270,7 @@ async def cmd_cookie(ctx: BotContext, args: str = "") -> str:
 
 
 async def cmd_panduan(ctx: BotContext, args: str = "") -> str:
-    return fmt.token_guide_text()
-
-
-async def cmd_reminder(ctx: BotContext, args: str) -> str:
-    user = await ctx.user()
-    arg = args.strip().lower()
-    if arg in ("on", "off"):
-        on = arg == "on"
-        await store.set_reminders_on(ctx.db, user.tg_chat_id, on)
-        fresh = await store.get_user(ctx.db, user.tg_chat_id)
-        if fresh:
-            ctx.refresh_user_cache(fresh)
-        return f"🔔 Reminder di{'hidupkan' if on else 'matikan'}."
-    return (
-        "Pemakaian: <code>/reminder on</code> atau <code>/reminder off</code>\n"
-        f"Jadwal saat ini: sore {ctx.settings.reminder_evening:%H:%M}, "
-        f"lanjutan {ctx.settings.reminder_followup:%H:%M}, darurat {ctx.settings.reminder_emergency:%H:%M} "
-        f"({fmt.esc(ctx.settings.tz_name)})"
-    )
+    return sesi.token_guide_text()
 
 
 async def cmd_interval(ctx: BotContext, args: str) -> str:
@@ -313,28 +288,20 @@ async def cmd_log(ctx: BotContext, args: str) -> str:
     limit = int(args.strip()) if args.strip().isdigit() else 10
     rows = await store.recent_events(ctx.db, user.tg_chat_id, min(limit, 30))
     if not rows:
-        return "Belum ada event."
-    lines = ["📜 <b>Event terakhir</b>"]
-    for row in rows:
-        created = row["created_at"][11:16]
-        detail = row["message"] or row["to_label"]
-        lines.append(f"{row['created_at'][8:10]}/{row['created_at'][5:7]} {created} — {fmt.esc(detail)}")
-    return "\n".join(lines)
+        return chat.log_empty_message()
+    return chat.log_list_message(rows)
 
 
 async def cmd_start(ctx: BotContext, args: str = "") -> str:
     user = await ctx.user()
-    return (
-        "🤖 <b>Bot pengingat absensi Maganghub aktif</b>\n"
-        f"Chat: <code>{fmt.esc(user.tg_chat_id)}</code>\n"
-        f"Participant: <code>{fmt.esc(user.participant_id[:8])}…</code>\n"
-        f"Base URL: {fmt.esc(ctx.settings.base_url)}\n"
-        f"Polling: {ctx.poll_minutes} menit · Reminder: {ctx.settings.reminder_evening:%H:%M}/"
-        f"{ctx.settings.reminder_followup:%H:%M}/{ctx.settings.reminder_emergency:%H:%M} "
-        f"{fmt.esc(ctx.settings.tz_name)}\n"
-        f"Token: {'✅ tersimpan' if user.bearer_token else '❌ belum ada — kirim /token'}\n"
-        f"Auto-refresh: {'✅ aktif (tanpa input token lagi)' if user.can_auto_refresh else '❌ belum — kirim /cookie'}\n\n"
-        "Ketik /help untuk daftar perintah."
+    return chat.start_card(
+        chat_id=user.tg_chat_id,
+        participant_id=user.participant_id,
+        base_url=ctx.settings.base_url,
+        poll_minutes=ctx.poll_minutes,
+        tz_name=ctx.settings.tz_name,
+        token_ok=bool(user.bearer_token),
+        refresh_ok=user.can_auto_refresh,
     )
 
 
@@ -345,7 +312,6 @@ HANDLERS: dict[str, Any] = {
     "tokeninfo": cmd_tokeninfo,
     "cookie": cmd_cookie,
     "panduan": cmd_panduan,
-    "reminder": cmd_reminder,
     "interval": cmd_interval,
     "log": cmd_log,
 }
@@ -362,7 +328,7 @@ async def dispatch(ctx: BotContext, chat_id: str, text: str) -> None:
         log.info("pesan dari chat tidak terdaftar: %s", chat_id)
         await ctx.tg.send_message(
             ctx.settings.telegram_chat_id,
-            f"🚫 Ada pesan dari chat asing <code>{fmt.esc(chat_id)}</code>: {fmt.esc(text[:80])}",
+            chat.foreign_chat_message(chat_id, text[:80]),
         )
         return
 
@@ -377,12 +343,12 @@ async def dispatch(ctx: BotContext, chat_id: str, text: str) -> None:
         await ctx.tg.send_message(chat_id, await apply_token(ctx, args))
         return
     if name == "help":
-        await ctx.tg.send_message(chat_id, fmt.help_text(""))
+        await ctx.tg.send_message(chat_id, chat.help_text(""))
         return
 
     handler = HANDLERS.get(name)
     if handler is None:
-        await ctx.tg.send_message(chat_id, "Perintah tidak dikenal. Coba /help.")
+        await ctx.tg.send_message(chat_id, chat.unknown_command_message())
         return
 
     try:
@@ -391,5 +357,5 @@ async def dispatch(ctx: BotContext, chat_id: str, text: str) -> None:
         log.exception("handler %s gagal", name)
         await ctx.tg.send_message(
             chat_id,
-            f"❌ Terjadi kesalahan: {fmt.esc(f'{exc.__class__.__name__}: {exc}')}"
+            chat.handler_error_message(f"{exc.__class__.__name__}: {exc}"),
         )

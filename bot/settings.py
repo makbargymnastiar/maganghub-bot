@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 DEFAULT_BASE_URL = "https://monev-api.maganghub.kemnaker.go.id"
@@ -62,16 +61,6 @@ def normalize_cookie(value: str) -> str:
     return f"monev_refresh_token={value.split(';')[0].strip()}"
 
 
-def _parse_hhmm(value: object, default: dtime) -> dtime:
-    if isinstance(value, str):
-        try:
-            hh, mm = value.strip().split(":")
-            return dtime(int(hh), int(mm))
-        except ValueError:
-            pass
-    return default
-
-
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -82,9 +71,8 @@ class Settings:
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Asia/Jakarta"))
     tz_name: str = "Asia/Jakarta"
     poll_minutes: int = 15
-    reminder_evening: dtime = dtime(18, 0)
-    reminder_followup: dtime = dtime(21, 0)
-    reminder_emergency: dtime = dtime(23, 0)
+    # Jadwal pengingat harian SENGAJA tidak dibuat configurable — terkunci di
+    # bot/jobs/reminders.py (16:55, berjenjang 18:00→23:59, paket pagi 08:00).
     db_path: str = "data/bot.db"
     log_level: str = "INFO"
     # Origin SPA (bukan API): dipakai mengambil `version.json` untuk header
@@ -127,9 +115,6 @@ def load_settings(raw: dict[str, object] | None = None) -> Settings:
         tz=tz,
         tz_name=tz_name,
         poll_minutes=max(5, int(get("POLL_MINUTES", 15))),
-        reminder_evening=_parse_hhmm(get("REMINDER_EVENING"), dtime(18, 0)),
-        reminder_followup=_parse_hhmm(get("REMINDER_FOLLOWUP"), dtime(21, 0)),
-        reminder_emergency=_parse_hhmm(get("REMINDER_EMERGENCY"), dtime(23, 0)),
         db_path=get("DB_PATH", os.path.join("data", "bot.db")),
         log_level=get("LOG_LEVEL", "INFO"),
         web_url=(get("MONEV_WEB_URL", DEFAULT_WEB_URL) or "").rstrip("/"),

@@ -1,12 +1,11 @@
 """Uji precedence status — meniru urutan fungsi `i(e, t, r)` frontend monev."""
 
 from bot.models import DayRecord
-from bot.status import (
+from bot.monev.status import (
     ABSENT,
     APPROVED,
     APPROVED_LEAVE,
     EMPTY,
-    FILLED_NOT_SUBMITTED,
     HOLIDAY,
     NEEDS_REVISION,
     NAGGABLE_KEYS,
@@ -129,10 +128,10 @@ COMPLETE = {"activity_log": "Merakit PC", "lesson_learned": "Belajar ESD", "obst
 FULL = {"activity_log": "Merakit PC", "lesson_learned": "Belajar ESD", "obstacles": "Kabel kurang"}
 
 
-def test_draf_sudah_terisi_lengkap_dilapor_sudah_diisi():
-    """User mengisi tiga kolom tapi belum tekan kirim -> label "Sudah Diisi, Belum Dikirim"."""
+def test_draf_sudah_terisi_lengkap_dilapor_menunggu_acc():
+    """Portal tidak mengenal tahap "belum dikirim": lengkap = terkirim."""
     record = rec(att(status="PRESENT", approval_status=None), daily={"state": "DRAFT", **FULL})
-    assert resolve(record) is FILLED_NOT_SUBMITTED
+    assert resolve(record) is PENDING_REVIEW
 
 
 def test_sebagian_terisi_bukan_belum_diisi():
@@ -171,7 +170,7 @@ def test_hari_izin_tidak_ditagih_uraian():
 
 def test_draf_tanpa_attendance_tetap_terlihat_kelengkapannya():
     record = rec(attendance=None, daily={"state": "DRAFT", **FULL})
-    assert resolve(record) is FILLED_NOT_SUBMITTED
+    assert resolve(record) is PENDING_REVIEW
 
 
 def test_pending_detail_sebut_isian_yang_kosong():
@@ -192,8 +191,14 @@ def test_pending_detail_kosong_saat_semua_rapi():
 
 
 def test_status_yang_ditagih_reminder():
-    assert NAGGABLE_KEYS == frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"})
-    assert FILLED_NOT_SUBMITTED.is_filled is False
+    assert NAGGABLE_KEYS == frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL"})
     assert PARTIAL.is_filled is False
     assert APPROVED.is_filled is True
     assert PENDING_REVIEW.is_filled is True
+
+
+def test_judul_label_memakai_bahasa_chat():
+    """Judul ikut redaksi notif yang disetujui user (bukan teks persis portal)."""
+    assert APPROVED.title == "Hadir Disetujui"
+    assert PENDING_REVIEW.title == "Menunggu ACC Mentor"
+    assert NEEDS_REVISION.title == "Perlu Revisi"
