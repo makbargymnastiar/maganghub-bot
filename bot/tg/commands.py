@@ -62,6 +62,9 @@ async def apply_token(ctx: BotContext, raw_token: str) -> str:
     except TokenRejected as exc:
         return fmt.token_rejected_message(exc.status, str(exc))
     except MonevError as exc:
+        # status None = portal tidak bisa dihubungi, bukan token salah
+        if exc.status is None:
+            return fmt.token_unreachable_message(str(exc))
         return fmt.token_rejected_message(exc.status, str(exc))
     finally:
         await probe.close()

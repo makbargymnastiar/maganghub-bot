@@ -95,10 +95,16 @@ def token_expired_message(reason: str) -> str:
     return (
         "⚠️ <b>Token monev tidak berlaku lagi</b>\n"
         f"Penyebab: {esc(reason)}\n\n"
-        "Buka portal monev di browser (login seperti biasa), lalu kirim token baru ke bot:\n"
-        "<code>/token &lt;Bearer …&gt;</code>\n"
-        "atau cukup tempel token yang dimulai dengan <code>eyJ0eXAi…</code>.\n"
-        "Polling otomatis lanjut lagi begitu token valid."
+        "Cara isi ulang (±30 detik, tanpa SSH):\n"
+        "1. Buka <code>monev.maganghub.kemnaker.go.id</code> dan login seperti biasa di browser.\n"
+        "2. Tekan <code>F12</code> → tab <code>Console</code> → tempel snippet “Cara A” dari\n"
+        "   <code>tools/bookmarklet.md</code> (di server: <code>/opt/monev-bot/tools/bookmarklet.md</code>)\n"
+        "   → token otomatis tersalin ke clipboard.\n"
+        "3. Paste di chat ini dengan awalan <code>/token</code> — atau tempel polos, bot\n"
+        "   mengenalinya dari awalan <code>eyJ0eXAi</code>.\n"
+        "4. Tunggu “✅ Token tersimpan &amp; tervalidasi”. Polling dan reminder lanjut sendiri,\n"
+        "   tanpa restart service.\n\n"
+        "Sambil menunggu, pantauan tanggal-tanggal sebelumnya tetap aman di database."
     )
 
 
@@ -120,12 +126,24 @@ def token_saved_message(masked: str, ttl_minutes: int, fingerprint: str) -> str:
     )
 
 
+def token_unreachable_message(detail: str) -> str:
+    """Dipakai saat portal tidak bisa dihubungi: bukan berarti token salah."""
+    return (
+        "⚠️ <b>Token belum bisa diverifikasi</b>\n"
+        f"Portal tidak bisa dihubungi: {esc(detail)}\n"
+        "Token tidak disimpan dan token lama tetap dipakai. Coba lagi sebentar; kalau "
+        "masih gagal, cek koneksi server lewat <code>journalctl -u monev-bot</code>."
+    )
+
+
 def token_rejected_message(status: int | None, detail: str) -> str:
     return (
         "❌ <b>Token ditolak server</b>\n"
         f"HTTP: {status if status else '-'}\n"
         f"Detail: {esc(detail)}\n"
-        "Pastikan token berasal dari sesi monev yang masih terbuka (bukan token lama)."
+        "Token lama tidak tertimpa. Ambil ulang dari sesi yang masih terbuka: login di "
+        "browser, lalu F12 → Console → snippet “Cara A” di <code>tools/bookmarklet.md</code>, "
+        "kirim lagi <code>/token</code>."
     )
 
 

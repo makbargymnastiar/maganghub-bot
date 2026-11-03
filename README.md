@@ -40,7 +40,7 @@ bot/
 legacy/main.py        versi lama (requests + schedule + state.json), disimpan apa adanya
 scripts/probe_api.py  alat live: panggil API, cetak status hasil pemetaan
 deploy/               systemd unit + installer Ubuntu
-tools/bookmarklet.md  cara cepat mengambil token dari browser
+tools/bookmarklet.md  panduan langkah-demi-langkah mengambil & mengisi token
 ```
 
 ## Cara kerja status
@@ -81,12 +81,19 @@ Kalau API mengirim nilai enum yang belum dipetakan, label jadi `UNKNOWN` dan bot
 mengirim satu pesan berisi klaim mentahnya (`attendance.status=… log.state=…`)
 supaya mapping bisa dikalibrasi, bukan didiamkan.
 
+**Kapan pesan dikirim?** Hanya saat label sebuah tanggal **berubah** (satu pesan per
+perubahan, state tersimpan di DB). Menambah satu kolom isian sambil tetap berstatus
+🟡 Sebagian Terisi tidak mengirim pesan baru — anti-spam; yang dikirim adalah
+pesan berikutnya saat status naik ke 🟣 / 📝 / ✅.
+
 ## Mengisi token lewat Telegram
 
 Token disimpan di DB, jadi penggantiannya cukup dari chat — tanpa SSH, tanpa restart:
 
-1. Ambil token dari browser tempat Anda login monev (lihat
-   [`tools/bookmarklet.md`](tools/bookmarklet.md) — cara tercepat).
+1. Ambil token dari browser tempat Anda login monev — langkah lengkapnya (Console,
+   Network tab, bookmarklet satu klik) ada di
+   [`tools/bookmarklet.md`](tools/bookmarklet.md); yang paling cepat adalah cara
+   Console + `copy()` karena tidak perlu membuat bookmark.
 2. Kirim ke bot:
    ```
    /token Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9....
@@ -175,7 +182,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 47 test: status mapping, diff polling, reminder plan, b64/JWT/settings
+python -m pytest -q                # 55 test: status mapping, alur notifikasi, reminder plan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 ```
