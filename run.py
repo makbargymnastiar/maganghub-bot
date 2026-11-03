@@ -46,6 +46,9 @@ def force_utf8_console() -> None:
 
 def setup_logging(level: str) -> None:
     force_utf8_console()
+    # httpx mencetak URL request utuh, dan URL Bot API berisi TELEGRAM_BOT_TOKEN.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
