@@ -15,6 +15,24 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Coverage
+.coverage
+.coverage_cache/
+.coverage.*
+htmlcov/
+
+# Build artifacts (bisa dibuat ulang dari source)
+build/
+dist/
+*.egg-info/
+
+# Temporary
+*.tmp
+*.temp
+.pytmp
 
 # Log
 logs/
