@@ -1,11 +1,9 @@
 # Kredensial & data rahasia
 config.py
 .env
-state.json
 data/
 
 # Export jaringan (berisi access_token - JANGAN PERNAH di-commit)
-download
 *.har
 
 # Python

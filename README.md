@@ -16,7 +16,6 @@ Bot **hanya membaca** API monev — ia tidak pernah mengisi atau mengirim lapora
 
 ```
 run.py                entrypoint (scheduler + long polling Telegram)
-main.py               shim kompatibilitas -> run.py
 bot/
   settings.py         baca config.py (rahasia), normalisasi, masking token
   db.py               skema SQLite (users, day_state, notify_flags, event_log, settings)
@@ -31,15 +30,13 @@ bot/
   jobs/
     poll.py           gabung 3 endpoint, deteksi perubahan, kirim notifikasi
     reminders.py      pengingat 18:00 / 21:00 / 23:00 + tindak lanjut revisi
-    token_health.py   peringatan H-30 menit, deteksi 401, pemulihan otomatis
+    token_health.py   peringatan H-30 menit, deteksi 401, auto-refresh via cookie
     announcements.py  pengumuman + warning keterlambatan dari portal
   tg/
     api.py            wrapper Bot API (getUpdates/sendMessage), tanpa library eksternal
     commands.py       dispatch perintah + BotContext
     format.py         perender pesan HTML (semua data API di-escape)
-legacy/main.py        versi lama (requests + schedule + state.json), disimpan apa adanya
 scripts/probe_api.py  alat live: panggil API, cetak status hasil pemetaan
-deploy/               systemd unit + installer Ubuntu
 tools/bookmarklet.md  panduan langkah-demi-langkah mengambil & mengisi token
 ```
 
@@ -88,8 +85,13 @@ pesan berikutnya saat status naik ke 🟣 / 📝 / ✅.
 
 ## Mengisi token lewat Telegram
 
-Token disimpan di DB, jadi penggantiannya cukup dari chat — tanpa SSH, tanpa restart:
+Token disimpan di DB, jadi penggantiannya cukup dari chat — tanpa SSH, tanpa restart.
+Yang perlu diingat: portal monev **tidak** menampilkan token di manapun; token adalah
+kunci sesi yang tersimpan di dalam browser setelah Anda login, jadi ia diambil dari
+DevTools, bukan dari menu website.
 
+0. Nyalakan botnya lebih dulu (`python run.py` di PC, atau service `monev-bot` aktif di
+   server) dan pastikan `/start` dijawab. `/token` diproses oleh bot, bukan Telegram.
 1. Ambil token dari browser tempat Anda login monev — langkah lengkapnya (Console,
    Network tab, bookmarklet satu klik) ada di
    [`tools/bookmarklet.md`](tools/bookmarklet.md); yang paling cepat adalah cara
@@ -103,15 +105,44 @@ Token disimpan di DB, jadi penggantiannya cukup dari chat — tanpa SSH, tanpa r
 3. Bot memanggil `/api/v1/users/me/home` dengan token itu sebagai uji. Kalau lolos,
    token disimpan + flag `token_invalid` dibersihkan + balasan berisi sisa umur
    sesi; kalau ditolak, token lama tidak tertimpa dan bot langsung menjelaskan penyebabnya.
+4. Lupa langkahnya? Ketik `/panduan` di chat bot — langkah 0–3 di atas diulang langsung
+   dalam bahasa chat ( `/token` tanpa isi juga mengirim panduan yang sama).
 
 Cara lain (bila Telegram sedang tidak bisa diakses):
 
 ```bash
 python run.py --set-token "Bearer eyJ0eXAi…"   # validasi + simpan ke DB, lalu bot jalan
+python run.py --set-cookie "monev_refresh_token=…"  # aktifkan auto-refresh dari CLI
 ```
 
 Isi `BEARER_TOKEN` di `config.py` hanya dipakai sebagai seed saat DB belum punya
 user; setelah token masuk lewat `/token`, yang dipercaya adalah token di DB.
+
+## Mode tanpa token (auto-refresh)
+
+Token akses monev berumur ±6 jam, jadi mengisinya manual itu melelahkan. Portal punya
+`POST /api/v1/auth/refresh` yang mencetak token baru — tapi endpoint itu **tidak**
+membaca Bearer, ia membaca cookie httpOnly `monev_refresh_token` milik domain API.
+Karena httpOnly, cookie itu tidak kelihatan di Console/localStorage; hanya bisa
+diambil dari panel DevTools:
+
+1. Login di `monev.maganghub.kemnaker.go.id`.
+2. F12 → tab **Application** (Firefox: **Storage**) → **Cookies** →
+   `https://monev-api.maganghub.kemnaker.go.id`.
+3. Salin nilai baris `monev_refresh_token`.
+4. Kirim sekali saja: `/cookie <nilai>` — bot langsung mengetesnya ke API, menyimpan
+   cookie + token baru, lalu menolak menyimpan kalau server menolaknya.
+
+Setelah itu bot memperpanjang token sendiri: job token-health (tiap 30 menit)
+memanggil refresh saat sisa umur token ≤ `TOKEN_REFRESH_LEAD_MINUTES` (default 90),
+dan setiap polling yang kena 401 langsung coba refresh lalu mengulang sekali
+(`poll_auto`). Selama cookie masih hidup, tidak ada lagi input token.
+
+Kalau suatu hari sesi Kemnaker Anda benar-benar berakhir (logout, umur maksimum
+sesi lewat), bot mengirim pesan sekali sehari berisi cara ambil cookie baru; token
+manual lewat `/token` tetap diterima sebagai jalan pintas. `/tokeninfo` menampilkan
+status auto-refresh. Belum tahu caranya? Ketik `/cookie` (kosong) untuk panduan ambil
+cookie, atau `/panduan` untuk ambil token.
 
 ## Konfigurasi
 
@@ -127,6 +158,9 @@ chmod 600 config.py
 | `MONEV_API_URL` | `https://monev-api.maganghub.kemnaker.go.id/api/v1/daily-logs` | boleh URL endpoint; base URL diturunkan otomatis |
 | `PARTICIPANT_ID` | — | UUID peserta magang |
 | `BEARER_TOKEN` | — | token awal; setelah itu cukup lewat `/token` di chat |
+| `MONEV_REFRESH_TOKEN` | kosong | cookie `monev_refresh_token`; setelah itu cukup lewat `/cookie` |
+| `MONEV_WEB_URL` | `https://monev.maganghub.kemnaker.go.id` | origin SPA untuk `version.json` (header build id) |
+| `TOKEN_REFRESH_LEAD_MINUTES` | `90` | mulai refresh saat sisa umur token di bawah selang ini |
 | `TZ_NAME` | `Asia/Jakarta` | zona waktu untuk reminder & "hari ini" |
 | `POLL_MINUTES` | `15` | minimum 5; bisa diubah runtime lewat `/interval` |
 | `REMINDER_EVENING` / `_FOLLOWUP` / `_EMERGENCY` | `18:00` / `21:00` / `23:00` | jam pengingat |
@@ -147,8 +181,9 @@ python run.py             # jalan terus: polling + perintah Telegram
 ```
 
 ```bash
-# Ubuntu
-sudo bash deploy/install_ubuntu.sh          # pasang ke /opt/monev-bot + systemd
+# Ubuntu (server — sudah terpasang di /opt/monev-bot + systemd)
+cd /opt/monev-bot && sudo -u monevbot git pull origin master
+sudo systemctl restart monev-bot
 sudo systemctl status monev-bot
 sudo journalctl -fu monev-bot
 ```
@@ -182,7 +217,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 55 test: status mapping, alur notifikasi, reminder plan, b64/JWT/settings
+python -m pytest -q                # 69 test: status mapping, alur notifikasi, reminder, auto-refresh, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 ```
@@ -197,4 +232,3 @@ bila portal melepas status baru.
   Tabel `users` sudah ber-`user_id` di semua relasi, jadi perluasan multi-user tidak butuh migrasi.
 - Tidak ada webhook/port inbound — cuma long polling, jadi server tanpa domain/HTTPS pun aman.
 - Bot tidak mengisi laporan; menulis ke portal sengaja tidak diimplementasikan.
-- Versi lama ada di `legacy/main.py` dan tidak dipelihara.

@@ -19,6 +19,14 @@ class User:
     token_invalid: bool = False
     active: bool = True
     reminders_on: bool = True
+    # Cookie httpOnly `monev_refresh_token`: kunci untuk mendapatkan access_token
+    # baru tanpa bertanya lagi ke user. Bentuk "nama=nilai" atau nilai saja.
+    refresh_cookie: str = ""
+    refresh_saved_at: datetime | None = None
+
+    @property
+    def can_auto_refresh(self) -> bool:
+        return bool(self.refresh_cookie)
 
 
 # Tiga kolom yang diisi peserta di portal monev. Terkunci dari data nyata (HAR):

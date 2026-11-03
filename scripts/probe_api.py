@@ -24,7 +24,7 @@ from bot import db as dbmod
 from bot import store
 from bot.api import endpoints
 from bot.api.client import MonevClient, MonevError, TokenRejected
-from bot.jobs.poll import build_records
+from bot.jobs.poll import build_records, months_for_window
 from bot.models import LOG_FIELDS
 from bot.settings import load_settings, mask_token
 from bot.status import pending_detail, resolve, unknown_detail
@@ -61,9 +61,13 @@ async def main(token: str | None, days: int, use_db: bool) -> int:
         print(json.dumps(home, indent=2, ensure_ascii=False))
 
         attendances = await endpoints.fetch_attendances(client, settings.participant_id)
-        logs = await endpoints.fetch_daily_logs(
-            client, settings.participant_id, settings.now().date().replace(day=1).isoformat()
-        )
+        # jendela --days bisa melewati batas bulan; API menjawab per bulan, jadi
+        # setiap bulan dalam jendela harus diminta (dulu hanya bulan berjalan,
+        # sehingga tanggal bulan lalu tampak "belum diisi")
+        today = settings.now().date()
+        logs: dict[str, object] = {}
+        for month in months_for_window(today, days):
+            logs.update(await endpoints.fetch_daily_logs(client, settings.participant_id, month))
     except TokenRejected as exc:
         print(f"\n❌ Token ditolak: {exc}. Ambil token baru dari browser lalu kirim /token.")
         return 1
@@ -73,7 +77,6 @@ async def main(token: str | None, days: int, use_db: bool) -> int:
     finally:
         await client.close()
 
-    today = settings.now().date()
     records = build_records(today, home, attendances, logs, lookback_days=days)
 
     print(f"\n== status {len(records)} tanggal (jendela {days} hari) ==")

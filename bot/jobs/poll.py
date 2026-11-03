@@ -48,6 +48,23 @@ def _month_first(day: date) -> str:
     return day.replace(day=1).isoformat()
 
 
+def months_for_window(today: date, lookback_days: int) -> list[str]:
+    """Awal bulan yang harus diminta supaya seluruh jendela lookback tertutup.
+
+    API daily-logs hanya menjawab per bulan (`date` = hari pertama bulan), jadi
+    jendela yang melewati batas bulan butuh lebih dari satu request. Kalau hanya
+    bulan berjalan yang diambil, tanggal di bulan sebelumnya tampak "tidak ada
+    log" dan salah dilabeli ATTENDED_NO_LOG/EMPTY.
+    """
+    cursor = (today - timedelta(days=max(lookback_days, 0))).replace(day=1)
+    end = today.replace(day=1)
+    months: list[str] = []
+    while cursor <= end:
+        months.append(cursor.isoformat())
+        cursor = (cursor + timedelta(days=32)).replace(day=1)
+    return months
+
+
 def build_records(
     today: date,
     home: dict[str, Any],
@@ -83,10 +100,7 @@ async def _fetch_indices(
     home = await endpoints.fetch_home(client)
     attendances = await endpoints.fetch_attendances(client, participant_id)
     logs: dict[str, dict[str, Any]] = {}
-    months = {_month_first(today)}
-    if today.day <= lookback_days:
-        months.add(_month_first(today.replace(day=1) - timedelta(days=1)))
-    for month in sorted(months):
+    for month in months_for_window(today, lookback_days):
         logs.update(await endpoints.fetch_daily_logs(client, participant_id, month))
     return attendances, logs, home
 

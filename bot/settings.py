@@ -13,6 +13,7 @@ from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 DEFAULT_BASE_URL = "https://monev-api.maganghub.kemnaker.go.id"
+DEFAULT_WEB_URL = "https://monev.maganghub.kemnaker.go.id"
 DAILY_LOGS_PATH = "/api/v1/daily-logs"
 
 
@@ -50,6 +51,17 @@ def _normalize_bearer(value: str) -> str:
     return value
 
 
+def normalize_cookie(value: str) -> str:
+    """Ambil isi cookie; buang atribut di belakangnya kalau ikut tersalin."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if "=" in value:
+        name, _, rest = value.partition("=")
+        return f"{name.strip()}={rest.split(';')[0].strip()}"
+    return f"monev_refresh_token={value.split(';')[0].strip()}"
+
+
 def _parse_hhmm(value: object, default: dtime) -> dtime:
     if isinstance(value, str):
         try:
@@ -75,6 +87,14 @@ class Settings:
     reminder_emergency: dtime = dtime(23, 0)
     db_path: str = "data/bot.db"
     log_level: str = "INFO"
+    # Origin SPA (bukan API): dipakai mengambil `version.json` untuk header
+    # X-Frontend-Build-ID saat memanggil /auth/refresh.
+    web_url: str = DEFAULT_WEB_URL
+    # Seed cookie `monev_refresh_token`; setelah pernah dikirim lewat /cookie,
+    # yang dipakai adalah nilai di DB (sama seperti BEARER_TOKEN).
+    refresh_cookie: str = ""
+    # Selang waktu bot mencoba refresh sebelum token akses benar-benar mati.
+    token_refresh_lead_minutes: int = 90
 
     def now(self):
         from datetime import datetime
@@ -112,6 +132,9 @@ def load_settings(raw: dict[str, object] | None = None) -> Settings:
         reminder_emergency=_parse_hhmm(get("REMINDER_EMERGENCY"), dtime(23, 0)),
         db_path=get("DB_PATH", os.path.join("data", "bot.db")),
         log_level=get("LOG_LEVEL", "INFO"),
+        web_url=(get("MONEV_WEB_URL", DEFAULT_WEB_URL) or "").rstrip("/"),
+        refresh_cookie=normalize_cookie(get("MONEV_REFRESH_TOKEN", "")),
+        token_refresh_lead_minutes=max(5, int(get("TOKEN_REFRESH_LEAD_MINUTES", 90))),
     )
 
 

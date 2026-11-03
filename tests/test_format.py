@@ -12,7 +12,7 @@ from bot.api.client import MonevError, TokenRejected
 from bot.jobs.poll import run_poll
 from bot.status import APPROVED, PARTIAL
 from bot.tg import format as fmt
-from bot.tg.commands import BotContext, apply_token
+from bot.tg.commands import BotContext, apply_token, dispatch
 from tests.test_poll_diff import FakeMonevClient, FakeTelegram, make_payloads
 
 TODAY = datetime.fromisoformat("2026-11-03T10:00:00+07:00")
@@ -159,6 +159,32 @@ def test_help_text_menyebut_tiga_isian():
     text = fmt.help_text("monev_bot")
     for word in ("aktivitas", "pembelajaran", "kendala", "Sudah Diisi"):
         assert word in text
+    assert "/panduan" in text
+
+
+async def test_token_kosong_mengirim_panduan_bukan_error(ctx):
+    """/token tanpa tempelan token = user lupa; jawabnya panduan, bukan teguran."""
+    settings, database, user = ctx
+    bot_ctx = BotContext(db=database, settings=settings, tg=FakeTelegram(), poll_minutes=15)
+    message = await apply_token(bot_ctx, "")
+
+    assert "Cara mengambil" in message
+    assert "F12" in message and "allow pasting" in message
+    assert "bukan token JWT" not in message
+
+
+async def test_panduan_lewat_dispatch_dan_muat_di_telegram(ctx):
+    settings, database, _user = ctx
+    tg = FakeTelegram()
+    bot_ctx = BotContext(db=database, settings=settings, tg=tg, poll_minutes=15)
+
+    await dispatch(bot_ctx, "111", "/panduan")
+
+    assert len(tg.messages) == 1
+    guide = tg.messages[0]
+    assert "token monev" in guide
+    assert "/token" in guide
+    assert len(guide) < 4096  # batas panjang pesan Telegram
 
 
 def test_pesan_token_kedaluwarsa_mengandung_langkah_dan_escaping():

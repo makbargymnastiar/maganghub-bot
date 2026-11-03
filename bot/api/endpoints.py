@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import MonevClient
+from .client import MonevClient, MonevError
 
 HOME_PATH = "/api/v1/users/me/home"
 ATTENDANCES_PATH = "/api/v1/attendances"
@@ -20,6 +20,42 @@ ABSENCE_WARNINGS_PATH = "/api/v1/participant-absence-warnings/me"
 ANNOUNCEMENTS_PATH = "/api/v1/users/announcements"
 SYSTEM_TIME_PATH = "/api/v1/system/time"
 USER_PROFILE_PATH = "/api/v1/users/me"
+REFRESH_PATH = "/api/v1/auth/refresh"
+
+
+def parse_token_response(payload: Any) -> tuple[str, str]:
+    """Ambil (access_token, refresh_cookie_rotasi) dari respons login/refresh."""
+    data = _as_dict(payload)
+    token = str(data.get("access_token") or data.get("token") or "")
+    rotated = str(data.get("refresh_token") or data.get("refresh_cookie") or "")
+    return token, rotated
+
+
+async def fetch_frontend_build_id(client: MonevClient, web_url: str) -> str:
+    """ID build SPA, dikirim frontend sebagai `X-Frontend-Build-ID`; gagal = string kosong."""
+    try:
+        data = await client.external_json(f"{web_url.rstrip('/')}/version.json")
+    except MonevError:
+        return ""
+    return str(data.get("build_id", "")) if isinstance(data, dict) else ""
+
+
+async def refresh_access_token(client: MonevClient, *, build_id: str = "") -> tuple[str, str]:
+    """Perpanjang sesi lewat cookie refresh: `POST /api/v1/auth/refresh`.
+
+    Dibuktikan dari bundle SPA (`_nuxt/Bdl9iSbj.js`) dan tes live: endpoint ini
+    TIDAK membaca Bearer token, tapi cookie httpOnly `monev_refresh_token`; tanpa
+    cookie itu server balas 401 + `Set-Cookie: monev_refresh_token=; Max-Age=0`.
+    Return (access_token baru, cookie hasil rotasi bila ada).
+    """
+    if not client.refresh_cookie:
+        raise MonevError("belum ada cookie refresh — kirim /cookie lebih dulu")
+    headers = {"X-Frontend-Build-ID": build_id} if build_id else None
+    payload = await client.post(REFRESH_PATH, {}, headers=headers)
+    token, rotated = parse_token_response(payload)
+    if not token:
+        raise MonevError("respons /auth/refresh tidak berisi access_token")
+    return token, rotated or client.rotated_cookie
 
 
 def _as_list(payload: Any) -> list[dict[str, Any]]:

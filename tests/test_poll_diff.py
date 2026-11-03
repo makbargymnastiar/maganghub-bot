@@ -6,7 +6,7 @@ import pytest
 
 from bot import db as dbmod
 from bot import store
-from bot.jobs.poll import run_poll
+from bot.jobs.poll import months_for_window, run_poll
 from bot.settings import load_settings
 
 TZ = "+07:00"
@@ -149,3 +149,19 @@ async def test_query_daily_logs_memakai_awal_bulan(ctx):
     params = next(p for path, p in client.calls if path == "/api/v1/daily-logs")
     assert params["limit"] == 100
     assert params["participant_id"] == "pid-1"
+
+
+def test_months_for_window_menutup_seluruh_jendela():
+    """Jendela yang melewati lebih dari satu batas bulan tidak boleh bolong."""
+    today = datetime(2026, 11, 3).date()
+    assert months_for_window(today, 7) == ["2026-10-01", "2026-11-01"]
+    # lookback 3 dari tgl 3 = 31 Okt masih masuk jendela -> bulan Okt ikut diminta
+    assert months_for_window(today, 3) == ["2026-10-01", "2026-11-01"]
+    assert months_for_window(today, 1) == ["2026-11-01"]
+    assert months_for_window(today, 60) == ["2026-09-01", "2026-10-01", "2026-11-01"]
+    # melewati batas tahun juga tidak boleh bolong
+    assert months_for_window(datetime(2026, 1, 5).date(), 40) == [
+        "2025-11-01",
+        "2025-12-01",
+        "2026-01-01",
+    ]

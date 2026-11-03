@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
     token_saved_at    TEXT NOT NULL DEFAULT '',
     token_ttl         INTEGER NOT NULL DEFAULT 21600,
     token_invalid     INTEGER NOT NULL DEFAULT 0,
+    refresh_cookie    TEXT NOT NULL DEFAULT '',
+    refresh_saved_at  TEXT NOT NULL DEFAULT '',
     active            INTEGER NOT NULL DEFAULT 1,
     reminders_on      INTEGER NOT NULL DEFAULT 1,
     created_at        TEXT NOT NULL
@@ -68,6 +70,21 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+# Kolom yang baru ada sejak versi "auto-refresh token". Ditambahkan sendiri kalau
+# DB lama belum punya, supaya pengguna tidak perlu menghapus data/bot.db.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("users", "refresh_cookie", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "refresh_saved_at", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    for table, column, ddl in MIGRATIONS:
+        async with db.execute(f"PRAGMA table_info({table})") as cur:
+            columns = {row[1] for row in await cur.fetchall()}
+        if column not in columns:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
 
 async def connect(db_path: str | os.PathLike[str]) -> aiosqlite.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -76,5 +93,6 @@ async def connect(db_path: str | os.PathLike[str]) -> aiosqlite.Connection:
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
     await db.executescript(SCHEMA)
+    await _migrate(db)
     await db.commit()
     return db

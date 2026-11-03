@@ -1,4 +1,4 @@
-# Token monev: cara mengambil & mengisinya (step by step)
+# Token & cookie monev: cara mengambil & mengisinya (step by step)
 
 Bot tidak punya akun/password ke Maganghub. Yang bot punya cuma **token sesi** Anda.
 Token itu:
@@ -6,12 +6,42 @@ Token itu:
 - umur efektifnya ±6 jam (`ttl: 21600` detik), **dan**
 - mati seketika begitu Anda login lagi di perangkat lain (HP/PC lain),
 
-jadi mengisinya ulang itu pekerjaan rutin, bukan sekali seumur hidup. Kalau token
-mati, bot berhenti polling dan mengirim satu pesan: *"Token monev tidak berlaku
-lagi"* — bot tidak akan spam, dan akan lanjut otomatis begitu token baru masuk.
+jadi token memang bisa mati kapan saja. Kalau mati, bot mengirim satu pesan
+*"Token monev tidak berlaku lagi"* — tidak spam, dan lanjut otomatis begitu ada
+kredensial baru.
+
+**Supaya Anda tidak perlu mengisi token lagi**: kirim cookie `monev_refresh_token`
+satu kali lewat **Cara E** (bagian bawah). Dengan cookie itu bot mencetak token baru
+sendiri lewat `/api/v1/auth/refresh`, dan mode manual di bawah tetap bisa dipakai
+kalau cookie ikut mati.
 
 Isi token **tidak** lewat file config dan **tidak** lewat server. Cukup dari chat
-Telegram. Dibawah ini 4 cara, urut dari yang paling gampang.
+Telegram. Dibawah ini 5 cara, urut dari yang paling gampang.
+
+> Token juga **tidak** ada di dalam bentuk isian di website monev. Banyak yang
+> macet di sini: portal tidak menampilkan token dimanapun. Token hanya bisa diambil
+> dari *dalam browser* Anda (localStorage/cookie/header request) setelah login.
+
+## Langkah 0 — sebelum mulai (sering terlewat)
+
+1. `config.py` sudah berisi `TELEGRAM_BOT_TOKEN` (dari @BotFather) dan
+   `TELEGRAM_CHAT_ID` (ID chat Anda — kirim pesan apa pun ke @RawDataBot untuk
+   melihatnya).
+2. Botnya harus **hidup** saat Anda mengirim token, karena yang memproses `/token`
+   adalah bot itu sendiri, bukan Telegram.
+   - Di PC (Windows, folder ini):
+     ```powershell
+     .\.venv\Scripts\python.exe run.py
+     ```
+     Biarkan jendelanya terbuka. Semua perintah (`/token`, `/status`) dikirim dari
+     chat Telegram, bukan dari jendela ini.
+   - Di server: `sudo systemctl status monev-bot` → harus `active (running)`.
+3. Kirim `/start` di chat @monev_bot. Ada balasan = bot siap, lanjut ke Cara A.
+   Tidak ada balasan sama sekali = masalahnya di token bot Telegram / chat ID /
+   proses bot yang mati — bukan di token monev.
+
+Ketik `/panduan` kapan pun di chat bot untuk melihat langkah-langkah ini ulang.
+
 
 ---
 
@@ -119,9 +149,45 @@ rilis.
 ```bash
 cd /opt/monev-bot
 sudo -u monevbot .venv/bin/python run.py --set-token "Bearer eyJ0eXAi…"
+# atau aktifkan mode tanpa-token dari CLI:
+sudo -u monevbot .venv/bin/python run.py --set-cookie "monev_refresh_token=…"
 ```
 
 Token divalidasi ke API dulu; kalau ditolak, token lama di DB tidak tertimpa.
+
+---
+
+## Cara E — Cookie refresh: berhenti memasukkan token
+
+Token akses mati tiap ±6 jam, jadi Cara A–D itu solusi sementara. Portal punya
+endpoint `POST /api/v1/auth/refresh` untuk mencetak token baru, dan bot bisa
+memanggilnya sendiri asalkan punya cookie `monev_refresh_token`. Cookie itu
+**httpOnly**, jadi tidak akan pernah muncul di Console atau `localStorage` — hanya
+bisa dilihat di panel DevTools:
+
+1. Login biasa di `monev.maganghub.kemnaker.go.id` (Chrome/Edge di PC paling mudah).
+2. Tekan `F12` → tab **Application**. (Firefox: tab **Storage**.)
+3. Kiri: **Cookies** → klik `https://monev-api.maganghub.kemnaker.go.id`
+   — perhatikan, ini domain API, bukan domain halaman portal.
+4. Cari baris **`monev_refresh_token`**, klik nilai panjang di kolom Value,
+   lalu `Ctrl+C` (atau klik kanan → *Copy value*).
+5. Kirim ke bot, satu kali saja:
+   ```
+   /cookie aiS7k…(nilai lengkap)…
+   ```
+   Awalan `monev_refresh_token=` boleh ikut ditempel, bot memaklumi keduanya.
+
+Bot langsung mengetes cookie itu ke API. Balasan **“🍪 Cookie refresh tersimpan”**
+berarti mulai sekarang token diperpanjang otomatis (job tiap 30 menit + percobaan
+ulang setiap kali API membalas 401) dan Anda tidak perlu mengirim token lagi.
+Kalau balasannya **“🔒 Sesi monev benar-benar berakhir”**, cookie tidak disimpan —
+umumnya artinya Anda sedang logout atau sesi akun Kemnaker-nya habis; login lagi,
+ulang langkah 2–5.
+
+Catatan yang belum terukur di lapangan: server bisa saja merotasinya (cookie lama
+tidak berlaku lagi) atau menolak sesi ganda. Kalau setelah bot refresh tab browser
+Anda minta login ulang, itu tanda sesi berganti — tidak merusak data apa pun, dan
+cukup kirim `/cookie` yang baru. Cek kondisi riilnya lewat `/log` dan `/tokeninfo`.
 
 ---
 
@@ -158,6 +224,13 @@ Token tersimpan di riwayat chat Anda. Pakai bot di akun pribadi, dan aktifkan
 auto-delete pesan untuk chat itu (Telegram Desktop: klik nama chat di bagian atas →
 **Auto-delete messages** → **24 hours**). Jangan kirim token dari PC warnet/kantor,
 karena bookmarklet membuka tab `t.me` dengan token terbaca di address bar.
+
+**Bagaimana kalau saya cuma punya HP?**
+Chrome/Edge di HP tidak punya Console, dan header request juga tidak bisa dilihat di
+sana. Jadi ambil token tetap perlu salah satu dari ini: browser HP dengan dev tools
+(Firefox Android atau Kiwi/Bromium, aktifkan *Request desktop site*), pinjam PC sebentar
+untuk Cara A/B/C, atau `run.py --set-token` lewat SSH (Cara D). Setelah token masuk ke
+DB, yang Anda kerjakan dari HP hanya mengirim ulang `/token` kalau sesi berganti.
 
 **Bot-nya tahu dari mana saya bukan orang lain?**
 Hanya `TELEGRAM_CHAT_ID` di `config.py` yang dilayani. Chat lain ditolak, dan Anda

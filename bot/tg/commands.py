@@ -20,7 +20,7 @@ from ..api.jwt_utils import fingerprint, looks_like_jwt, session_user, ttl_secon
 from ..jobs import token_health
 from ..jobs.poll import PollResult, run_poll
 from ..models import User
-from ..settings import Settings, mask_token
+from ..settings import Settings, mask_token, normalize_cookie
 from ..status import ALL_LABELS
 from . import format as fmt
 from .api import TelegramClient
@@ -46,11 +46,53 @@ class BotContext:
         self._user = user
 
     def client_for(self, user: User) -> MonevClient:
-        return MonevClient(self.settings.base_url, user.bearer_token)
+        # Cookie refresh ikut dibawa supaya `keepalive()` bisa memanggil
+        # /auth/refresh dengan kredensial yang tersimpan di DB, bukan dari user.
+        return MonevClient(
+            self.settings.base_url, user.bearer_token, refresh_cookie=user.refresh_cookie
+        )
+
+
+async def poll_auto(ctx: BotContext) -> PollResult:
+    """Satu siklus polling dengan pemulihan otomatis.
+
+    Kalau server menolak token akses, bot coba refresh lewat cookie lebih dulu dan
+    mengulang sekali. TokenRejected hanya naik kalau auto-refresh tidak mungkin
+    atau tetap ditolak — itu satu-satunya saat user perlu bertindak.
+    """
+    user = await ctx.user()
+    if not user.bearer_token:
+        raise MonevError("belum ada token — kirim /cookie atau /token lebih dulu")
+    client = ctx.client_for(user)
+    try:
+        try:
+            return await _poll_once(ctx, user, client)
+        except TokenRejected:
+            fresh = await token_health.keepalive(
+                ctx.db, ctx.settings, user, client, ctx.tg, force=True
+            )
+            if fresh is None:
+                raise
+            ctx.refresh_user_cache(fresh)
+            return await _poll_once(ctx, fresh, client)
+    finally:
+        await client.close()
+
+
+async def _poll_once(ctx: BotContext, user: User, client: MonevClient) -> PollResult:
+    result = await run_poll(ctx.db, ctx.settings, user, client, notify=ctx.tg)
+    if user.token_invalid:
+        await token_health.mark_token_valid(ctx.db, user, ctx.settings.now())
+        fresh = await store.get_user(ctx.db, user.tg_chat_id)
+        ctx.refresh_user_cache(fresh or user)
+    return result
 
 
 async def apply_token(ctx: BotContext, raw_token: str) -> str:
     """Simpan token setelah divalidasi ke API. Kembalikan pesan balasan (HTML)."""
+    if not (raw_token or "").strip():
+        # /token tanpa isi = user lupa menempel tokennya; kirim panduannya
+        return fmt.token_guide_text()
     token = raw_token.strip().removeprefix("Bearer ").strip()
     if not looks_like_jwt(token):
         return "❌ Itu bukan token JWT monev. Format: <code>/token Bearer eyJ0eXAi…</code>"
@@ -95,33 +137,75 @@ async def apply_token(ctx: BotContext, raw_token: str) -> str:
     return f"🔑 Token aktif. Portal melaporkan tanggal <b>{fmt.esc(date_hint)}</b>."
 
 
+async def apply_cookie(ctx: BotContext, raw_cookie: str) -> str:
+    """Simpan cookie refresh setelah dites nyata ke /auth/refresh.
+
+    Cookie tidak bisa diperiksa bentuknya seperti JWT, jadi satu-satunya validasi
+    adalah memanggil endpointnya. Kalau ditolak, cookie tidak disimpan supaya
+    konfigurasi lama tidak rusak.
+    """
+    if not (raw_cookie or "").strip():
+        return fmt.cookie_missing_message()
+
+    user = await ctx.user()
+    probe = MonevClient(ctx.settings.base_url, user.bearer_token)
+    probe.set_refresh_cookie(normalize_cookie(raw_cookie))
+    try:
+        build_id = await endpoints.fetch_frontend_build_id(probe, ctx.settings.web_url)
+        token, rotated = await endpoints.refresh_access_token(probe, build_id=build_id)
+    except TokenRejected as exc:
+        return fmt.refresh_cookie_dead_message(str(exc))
+    except MonevError as exc:
+        if exc.status is None:
+            return fmt.token_unreachable_message(str(exc))
+        return fmt.refresh_cookie_dead_message(str(exc))
+    finally:
+        await probe.close()
+
+    now = ctx.settings.now()
+    cookie = normalize_cookie(f"{probe.cookie_name}={rotated or probe.refresh_cookie}")
+    await store.update_refresh_cookie(ctx.db, user.tg_chat_id, cookie, now)
+    await store.update_token(
+        ctx.db, user.tg_chat_id, token, fingerprint(token), ttl_seconds(token), now
+    )
+    await store.set_token_invalid(ctx.db, user.tg_chat_id, False)
+    fresh = await store.get_user(ctx.db, user.tg_chat_id)
+    if fresh:
+        ctx.refresh_user_cache(fresh)
+    await store.add_event(
+        ctx.db, user.tg_chat_id, now.date().isoformat(), "", "", store.KIND_TOKEN,
+        "cookie refresh disimpan, token diperbarui", now,
+    )
+    await ctx.db.execute(
+        "DELETE FROM notify_flags WHERE user_id = ? AND flag IN ('token_warning', 'token_alert', 'refresh_failed')",
+        (user.tg_chat_id,),
+    )
+    await ctx.db.commit()
+    return fmt.cookie_saved_message(mask_token(cookie.split("=", 1)[-1]), ttl_seconds(token) // 60)
+
+
 async def cmd_cek(ctx: BotContext, args: str = "") -> str:
     user = await ctx.user()
     if not user.bearer_token:
-        return "⚠️ Belum ada token. Kirim <code>/token &lt;Bearer …&gt;</code> dulu."
-    client = ctx.client_for(user)
+        return (
+            "⚠️ Belum ada token. Kirim <code>/cookie &lt;monev_refresh_token&gt;</code> "
+            "(biar otomatis) atau <code>/token &lt;Bearer …&gt;</code>."
+        )
     try:
-        result = await run_poll(ctx.db, ctx.settings, user, client, notify=ctx.tg)
-        ctx.last_result = result
+        result = await poll_auto(ctx)
     except TokenRejected as exc:
         await token_health.mark_token_invalid(ctx.db, user, ctx.tg, str(exc), ctx.settings.now())
         fresh = await store.get_user(ctx.db, user.tg_chat_id)
         if fresh:
             ctx.refresh_user_cache(fresh)
-        return "⚠️ Token ditolak server, sudah dikirim instruksi perbarui token."
+        return "⚠️ Token ditolak server dan perpanjangan otomatis gagal. Cek <code>/tokeninfo</code>."
     except MonevError as exc:
         await store.add_event(
             ctx.db, user.tg_chat_id, "", "", "", store.KIND_ERROR, str(exc), ctx.settings.now()
         )
         return f"❌ Gagal memanggil API: {fmt.esc(exc)}"
-    finally:
-        await client.close()
 
-    fresh = await store.get_user(ctx.db, user.tg_chat_id)
-    if fresh and fresh.token_invalid:
-        await token_health.mark_token_valid(ctx.db, fresh, ctx.settings.now())
-        await store.set_token_invalid(ctx.db, user.tg_chat_id, False)
-        ctx.refresh_user_cache(fresh)
+    ctx.last_result = result
 
     if result.seeded:
         return (
@@ -169,7 +253,31 @@ async def cmd_tokeninfo(ctx: BotContext, args: str = "") -> str:
         lines.append(f"Perkiraan sisa: {left} menit")
     else:
         lines.append("Perkiraan sisa: tidak diketahui (token dari config.py sebelum migrasi)")
+    if user.can_auto_refresh:
+        saved = (
+            f" (sejak {user.refresh_saved_at.strftime('%d-%m-%Y %H:%M')})"
+            if user.refresh_saved_at
+            else ""
+        )
+        lines.append(
+            f"Auto-refresh: ✅ cookie <code>{fmt.esc(mask_token(user.refresh_cookie))}</code>{saved}"
+        )
+        lines.append(f"Bot memperpanjang token sendiri saat sisa ≤ {ctx.settings.token_refresh_lead_minutes} menit.")
+    else:
+        lines.append(
+            "Auto-refresh: ❌ belum ada cookie — token harus ditempel manual tiap ±6 jam."
+        )
+        lines.append("Supaya tidak perlu input ulang: kirim <code>/cookie &lt;nilai&gt;</code> (caranya: /panduan).")
+    lines.append("Lupa caranya? Ketik <code>/panduan</code>.")
     return "\n".join(lines)
+
+
+async def cmd_cookie(ctx: BotContext, args: str = "") -> str:
+    return await apply_cookie(ctx, args)
+
+
+async def cmd_panduan(ctx: BotContext, args: str = "") -> str:
+    return fmt.token_guide_text()
 
 
 async def cmd_reminder(ctx: BotContext, args: str) -> str:
@@ -224,7 +332,8 @@ async def cmd_start(ctx: BotContext, args: str = "") -> str:
         f"Polling: {ctx.poll_minutes} menit · Reminder: {ctx.settings.reminder_evening:%H:%M}/"
         f"{ctx.settings.reminder_followup:%H:%M}/{ctx.settings.reminder_emergency:%H:%M} "
         f"{fmt.esc(ctx.settings.tz_name)}\n"
-        f"Token: {'✅ tersimpan' if user.bearer_token else '❌ belum ada — kirim /token'}\n\n"
+        f"Token: {'✅ tersimpan' if user.bearer_token else '❌ belum ada — kirim /token'}\n"
+        f"Auto-refresh: {'✅ aktif (tanpa input token lagi)' if user.can_auto_refresh else '❌ belum — kirim /cookie'}\n\n"
         "Ketik /help untuk daftar perintah."
     )
 
@@ -234,6 +343,8 @@ HANDLERS: dict[str, Any] = {
     "status": cmd_status,
     "cek": cmd_cek,
     "tokeninfo": cmd_tokeninfo,
+    "cookie": cmd_cookie,
+    "panduan": cmd_panduan,
     "reminder": cmd_reminder,
     "interval": cmd_interval,
     "log": cmd_log,

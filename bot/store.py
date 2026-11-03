@@ -23,6 +23,7 @@ def _iso(dt: datetime) -> str:
 
 def _row_to_user(row: aiosqlite.Row) -> User:
     saved_at = row["token_saved_at"]
+    refresh_at = row["refresh_saved_at"] if "refresh_saved_at" in row.keys() else ""
     return User(
         tg_chat_id=row["tg_chat_id"],
         participant_id=row["participant_id"],
@@ -34,6 +35,8 @@ def _row_to_user(row: aiosqlite.Row) -> User:
         token_invalid=bool(row["token_invalid"]),
         active=bool(row["active"]),
         reminders_on=bool(row["reminders_on"]),
+        refresh_cookie=(row["refresh_cookie"] if "refresh_cookie" in row.keys() else "") or "",
+        refresh_saved_at=datetime.fromisoformat(refresh_at) if refresh_at else None,
     )
 
 
@@ -41,10 +44,20 @@ async def ensure_user(db: aiosqlite.Connection, settings: Settings, name: str = 
     """Seed satu baris user dari `config.py`; token lama di DB tidak ditimpa."""
     now = _iso(settings.now())
     await db.execute(
-        """INSERT INTO users (tg_chat_id, participant_id, name, bearer_token, created_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(tg_chat_id) DO UPDATE SET participant_id = excluded.participant_id""",
-        (settings.telegram_chat_id, settings.participant_id, name, settings.bearer_token, now),
+        """INSERT INTO users (tg_chat_id, participant_id, name, bearer_token, refresh_cookie, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(tg_chat_id) DO UPDATE SET
+               participant_id = excluded.participant_id,
+               refresh_cookie = CASE WHEN users.refresh_cookie = '' THEN excluded.refresh_cookie
+                                     ELSE users.refresh_cookie END""",
+        (
+            settings.telegram_chat_id,
+            settings.participant_id,
+            name,
+            settings.bearer_token,
+            settings.refresh_cookie,
+            now,
+        ),
     )
     if name:
         await db.execute(
@@ -92,6 +105,17 @@ async def update_token(
 async def set_token_invalid(db: aiosqlite.Connection, user_id: str, invalid: bool) -> None:
     await db.execute(
         "UPDATE users SET token_invalid = ? WHERE tg_chat_id = ?", (int(invalid), user_id)
+    )
+    await db.commit()
+
+
+async def update_refresh_cookie(
+    db: aiosqlite.Connection, user_id: str, cookie: str, at: datetime
+) -> None:
+    """Simpan cookie refresh (`nama=nilai`); nilai kosong berarti matikan auto-refresh."""
+    await db.execute(
+        "UPDATE users SET refresh_cookie = ?, refresh_saved_at = ? WHERE tg_chat_id = ?",
+        (cookie or "", _iso(at), user_id),
     )
     await db.commit()
 

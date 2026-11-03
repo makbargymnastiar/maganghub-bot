@@ -22,11 +22,10 @@ from bot import store
 from bot.api.client import MonevError, TokenRejected
 from bot.jobs import token_health
 from bot.jobs.announcements import run_info_job
-from bot.jobs.poll import run_poll
 from bot.jobs.reminders import run_reminders
 from bot.settings import load_settings
 from bot.tg.api import TelegramClient
-from bot.tg.commands import BotContext, apply_token, dispatch
+from bot.tg.commands import BotContext, apply_cookie, apply_token, dispatch, poll_auto
 
 REMINDER_EVERY = timedelta(minutes=5)
 TOKEN_HEALTH_EVERY = timedelta(minutes=30)
@@ -81,10 +80,19 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
         if now >= next_token:
             next_token = now + TOKEN_HEALTH_EVERY
             user = await ctx.user()
+            client = ctx.client_for(user)
             try:
+                # perpanjang dulu (kalau sudah mendekati umur habis), baru peringatan
+                fresh = await token_health.keepalive(
+                    ctx.db, settings, user, client, ctx.tg, now=now
+                )
+                if fresh is not None:
+                    ctx.refresh_user_cache(fresh)
                 await token_health.run_token_health(ctx.db, settings, user, ctx.tg, now=now)
             except Exception:  # noqa: BLE001
                 logging.exception("job token health gagal")
+            finally:
+                await client.close()
 
         if now >= next_info:
             next_info = now + INFO_EVERY
@@ -107,18 +115,14 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
 async def do_poll(ctx: BotContext) -> None:
     user = await ctx.user()
     if not user.bearer_token:
-        logging.warning("belum ada token — jalankan /token dulu")
+        logging.warning("belum ada token — kirim /cookie atau /token lewat chat")
         return
-    if user.token_invalid:
+    if user.token_invalid and not user.can_auto_refresh:
+        # token mati dan tidak ada cookie: tunggu aksi user, jangan spam API
         return
 
-    client = ctx.client_for(user)
     try:
-        ctx.last_result = await run_poll(ctx.db, ctx.settings, user, client, notify=ctx.tg)
-        fresh = await store.get_user(ctx.db, user.tg_chat_id)
-        if fresh and fresh.token_invalid:
-            await token_health.mark_token_valid(ctx.db, fresh, ctx.settings.now())
-            ctx.refresh_user_cache(await store.get_user(ctx.db, user.tg_chat_id))
+        ctx.last_result = await poll_auto(ctx)
     except TokenRejected as exc:
         await token_health.mark_token_invalid(ctx.db, user, ctx.tg, str(exc), ctx.settings.now())
         ctx.refresh_user_cache(await store.get_user(ctx.db, user.tg_chat_id))
@@ -136,8 +140,6 @@ async def do_poll(ctx: BotContext) -> None:
         )
     except Exception:  # noqa: BLE001
         logging.exception("polling gagal tak terduga")
-    finally:
-        await client.close()
 
 
 async def telegram_loop(ctx: BotContext, stop: asyncio.Event) -> None:
@@ -165,7 +167,7 @@ async def telegram_loop(ctx: BotContext, stop: asyncio.Event) -> None:
                 logging.exception("dispatch gagal")
 
 
-async def main(once: bool = False, force_token: str | None = None) -> int:
+async def main(once: bool = False, force_token: str | None = None, force_cookie: str | None = None) -> int:
     settings = load_settings()
     setup_logging(settings.log_level)
 
@@ -191,6 +193,13 @@ async def main(once: bool = False, force_token: str | None = None) -> int:
     if force_token:
         message = await apply_token(ctx, force_token)
         logging.info("token dari CLI: %s", message.replace("<b>", "").replace("</b>", ""))
+
+    if force_cookie:
+        message = await apply_cookie(ctx, force_cookie)
+        logging.info(
+            "cookie dari CLI: %s",
+            message.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""),
+        )
 
     if once:
         await do_poll(ctx)
@@ -223,5 +232,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bot pengingat absensi monev Maganghub")
     parser.add_argument("--once", action="store_true", help="satu siklus polling lalu keluar (tanpa Telegram loop)")
     parser.add_argument("--set-token", metavar="BEARER", help="simpan & validasi token lalu lanjut jalan")
+    parser.add_argument("--set-cookie", metavar="COOKIE", help="simpan cookie monev_refresh_token (auto-refresh)")
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(main(once=args.once, force_token=args.set_token)))
+    raise SystemExit(
+        asyncio.run(main(once=args.once, force_token=args.set_token, force_cookie=args.set_cookie))
+    )

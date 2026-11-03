@@ -10,15 +10,29 @@ TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 MONEV_API_URL = "https://monev-api.maganghub.kemnaker.go.id/api/v1/daily-logs"
 PARTICIPANT_ID = "YOUR_PARTICIPANT_ID"
 
-# Token sesi. Umur efektif +/- 6 jam dan sesi lama dibatalkan saat Anda login lagi,
-# jadi setelah build cukup perbarui lewat chat Telegram: /token <bearer>
+# Token akses sesi monev. Umur efektif +/- 6 jam dan sesi lama dibatalkan saat Anda
+# login lagi. Ini HANYA seed awal — kalau MONEV_REFRESH_TOKEN di bawah terisi, bot
+# memperbarui token sendiri dan Anda tidak perlu mengirim apa-apa lagi.
+# Cara paling nyaman: kirim lewat chat Telegram, /token <bearer>
 BEARER_TOKEN = "Bearer YOUR_BEARER_TOKEN"
+
+# Cookie httpOnly `monev_refresh_token` (F12 -> Application -> Cookies ->
+# https://monev-api.maganghub.kemnaker.go.id). Dengan cookie ini bot memanggil
+# POST /api/v1/auth/refresh untuk mencetak token akses baru secara otomatis.
+# Boleh dikosongkan; diisi lewat chat lebih praktis: /cookie <nilai>
+MONEV_REFRESH_TOKEN = ""
 
 # --- Opsional (boleh dihapus, memakai default di bot/settings.py) ---
 TZ_NAME = "Asia/Jakarta"
+# Seberapa sering bot memantau status (menit). 15 = status ACC dikirim lebih cepat.
 POLL_MINUTES = 15
 REMINDER_EVENING = "18:00"
 REMINDER_FOLLOWUP = "21:00"
 REMINDER_EMERGENCY = "23:00"
 DB_PATH = "data/bot.db"
 LOG_LEVEL = "INFO"
+
+# Origin SPA (sumber version.json untuk header X-Frontend-Build-ID saat refresh).
+MONEV_WEB_URL = "https://monev.maganghub.kemnaker.go.id"
+# Bot mulai memperpanjang token saat sisa umurnya di bawah selang ini (menit).
+TOKEN_REFRESH_LEAD_MINUTES = 90
