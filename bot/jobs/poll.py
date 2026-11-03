@@ -23,7 +23,7 @@ from ..api import endpoints
 from ..api.client import MonevClient
 from ..models import DayRecord, User
 from ..settings import Settings
-from ..status import UNKNOWN, Label, resolve, unknown_detail
+from ..status import UNKNOWN, Label, pending_detail, resolve, unknown_detail
 from ..tg import format as fmt
 
 log = logging.getLogger("bot.poll")
@@ -163,7 +163,9 @@ async def run_poll(
             continue
 
         if notify is not None:
-            await notify.send_message(user.tg_chat_id, fmt.status_change(label, record.date))
+            await notify.send_message(
+                user.tg_chat_id, fmt.status_change(label, record.date, extra=pending_detail(record))
+            )
         result.changes.append((record.date, label.key))
         log.info("status %s -> %s (%s)", previous, label.key, record.date)
 

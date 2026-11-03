@@ -25,8 +25,9 @@ from bot import store
 from bot.api import endpoints
 from bot.api.client import MonevClient, MonevError, TokenRejected
 from bot.jobs.poll import build_records
+from bot.models import LOG_FIELDS
 from bot.settings import load_settings, mask_token
-from bot.status import resolve, unknown_detail
+from bot.status import pending_detail, resolve, unknown_detail
 from run import force_utf8_console
 
 
@@ -78,14 +79,18 @@ async def main(token: str | None, days: int, use_db: bool) -> int:
     print(f"\n== status {len(records)} tanggal (jendela {days} hari) ==")
     for record in records:
         label = resolve(record)
+        total = len(LOG_FIELDS)
         line = (
-            f"{record.date}  {label.emoji} {label.key:<16} "
+            f"{record.date}  {label.emoji} {label.key:<20} "
+            f"isi={total - len(record.missing_fields)}/{total} "
             f"att={record.attendance_status or '-'} "
             f"appr={record.approval_status or '-'} "
             f"state={record.log_state or '-'}"
         )
         if label.key == "UNKNOWN":
             line += f"  << {unknown_detail(record)}"
+        elif pending_detail(record):
+            line += f"  << {pending_detail(record)}"
         print(line)
 
     enum_values = {

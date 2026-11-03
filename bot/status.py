@@ -11,10 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .models import DayRecord
+from .models import LOG_FIELDS, DayRecord
 
 # --- Klaim enum yang terkonfirmasi dari JS frontend + data API -----------------
 ATT_DAYOFF = "DAYOFF"
+ATT_PRESENT = "PRESENT"
 ATT_ABSENT = "ABSENT"
 ATT_ON_LEAVE = "ON_LEAVE"
 ATT_APPROVED = "APPROVED"
@@ -37,7 +38,11 @@ class Label:
     @property
     def is_filled(self) -> bool:
         """Sudah tidak layak ditagih reminder pengisian."""
-        return self.key not in (EMPTY.key, ATTENDED_NO_LOG.key)
+        return self.key not in NAGGABLE_KEYS
+
+
+# Status yang masih boleh ditagih reminder: isian belum lengkap atau belum dikirim.
+NAGGABLE_KEYS = frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"})
 
 
 APPROVED = Label("APPROVED", "✅", "Hadir disetujui", "Tidak ada tindakan.")
@@ -51,7 +56,16 @@ REVISION_SUBMITTED = Label(
     "REVISION_SUBMITTED", "⏳", "Perbaikan Menunggu Peninjauan", "Tunggu mentor meninjau perbaikan."
 )
 PENDING_REVIEW = Label(
-    "PENDING_REVIEW", "📝", "Menunggu Persetujuan", "Laporan terkirim, tunggu ACC mentor."
+    "PENDING_REVIEW", "📝", "Menunggu Persetujuan", "Sudah diisi dan terkirim, tunggu ACC mentor."
+)
+FILLED_NOT_SUBMITTED = Label(
+    "FILLED_NOT_SUBMITTED",
+    "🟣",
+    "Sudah Diisi, Belum Dikirim",
+    "Aktivitas/pembelajaran/kendala lengkap — tekan kirim di portal supaya mentor bisa ACC.",
+)
+PARTIAL = Label(
+    "PARTIAL", "🟡", "Sebagian Terisi", "Lengkapi isian yang masih kosong, lalu kirim."
 )
 EMPTY = Label("EMPTY", "⚪", "Belum Diisi", "Isi absensi dan uraian aktivitas hari ini.")
 HOLIDAY = Label("HOLIDAY", "🗓️", "Hari Libur", "Tidak ada pengisian pada hari libur.")
@@ -73,6 +87,8 @@ ALL_LABELS: dict[str, Label] = {
         NEEDS_REVISION,
         REVISION_SUBMITTED,
         PENDING_REVIEW,
+        FILLED_NOT_SUBMITTED,
+        PARTIAL,
         EMPTY,
         HOLIDAY,
         ATTENDED_NO_LOG,
@@ -82,7 +98,14 @@ ALL_LABELS: dict[str, Label] = {
 
 
 def resolve(record: DayRecord) -> Label:
-    """Urutan cek sama persis dengan frontend (baris 1 paling tinggi prioritasnya)."""
+    """Urutan cek mengikuti frontend; baris 1 paling tinggi prioritasnya.
+
+    Satu deviasi sadar (nomor 7): frontend melabeli "Hadir disetujui" begitu
+    `attendance.approval_status == APPROVED`, padahal uraian harian masih boleh
+    kosong. Untuk bot pengingat, selama aktivitas/pembelajaran/kendala belum
+    lengkap atau belum dikirim, pekerjaan peserta belum selesai — jadi label
+    kelengkapan menang, kecuali hari izin (uraian tidak ditagih).
+    """
     att = record.attendance
     state = record.log_state
 
@@ -107,17 +130,26 @@ def resolve(record: DayRecord) -> Label:
     # 6. log.state == COMPLETED  (sudah final, menunggu ACC)
     if state == LOG_COMPLETED:
         return PENDING_REVIEW
-    # 7. attendance.approval_status == APPROVED
+    # 7. isian harian belum final — dahulukan daripada "hadir disetujui" (lihat docstring)
+    if state in (None, LOG_DRAFT) and record.attendance_status != ATT_ON_LEAVE:
+        if record.content_complete:
+            return FILLED_NOT_SUBMITTED
+        if record.filled_count:
+            return PARTIAL
+        # Hadir di hari kerja (atau draf tanpa isi) tapi laporan belum ada isinya.
+        if record.has_log or record.attendance_status == ATT_PRESENT:
+            return ATTENDED_NO_LOG
+    # 8. attendance.approval_status == APPROVED
     if record.approval_status == ATT_APPROVED:
         return APPROVED_LEAVE if record.attendance_status == ATT_ON_LEAVE else APPROVED
-    # 7b. laporan sudah di-ACC tapi attendance belum/tdk ada status approval
+    # 8b. laporan sudah di-ACC tapi attendance belum/tdk ada status approval
     if state == ATT_APPROVED:
         return APPROVED_LEAVE if record.attendance_status == ATT_ON_LEAVE else APPROVED
-    # 8. attendance.approval_status == SUBMITTED
+    # 9. attendance.approval_status == SUBMITTED
     if record.approval_status == ATT_SUBMITTED:
         return PENDING_REVIEW
 
-    # 9. fallback frontend = "Belum Diisi", dengan pengecualian informatif:
+    # 10. fallback frontend = "Belum Diisi", dengan pengecualian informatif:
     #    kehadiran sudah ada tapi uraian masih DRAFT/kosong.
     if att is not None and state in (None, LOG_DRAFT):
         return ATTENDED_NO_LOG
@@ -144,6 +176,16 @@ def unknown_detail(record: DayRecord) -> str:
     if record.log_state:
         parts.append(f"log.state={record.log_state}")
     return ", ".join(parts) or "(semua kosong)"
+
+
+def pending_detail(record: DayRecord) -> str:
+    """Baris pelengkap notifikasi: catatan mentor atau isian yang masih kosong."""
+    if record.log_state == LOG_NEEDS_REVISION and record.reviewer_notes:
+        return f"Catatan mentor: {record.reviewer_notes}"
+    missing = record.missing_fields
+    if record.log is not None and missing and len(missing) < len(LOG_FIELDS):
+        return "Masih kosong: " + ", ".join(missing)
+    return ""
 
 
 def mentor_action_pending(attendance: dict[str, Any] | None) -> bool:

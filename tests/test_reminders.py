@@ -26,8 +26,14 @@ def test_status_sudah_diisi_tidak_ditagih():
         assert plan_reminders(at(23, 30), key, set(), TIMES) == []
 
 
-def test_hanya_status_kosong_dan_uraian_kosong_yang_ditagih():
-    assert NAGGABLE == {"EMPTY", "ATTENDED_NO_LOG"}
+def test_hanya_status_belum_lengkap_yang_ditagih():
+    assert NAGGABLE == {"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"}
+
+
+def test_sudah_diisi_tapi_belum_dikirim_tetap_ditagih():
+    """Isi lengkap tapi tombol kirim belum ditekan = masih harus diingatkan."""
+    assert plan_reminders(at(18, 0), "FILLED_NOT_SUBMITTED", set(), TIMES) == [(FLAG_EVENING, "evening")]
+    assert plan_reminders(at(18, 0), "PARTIAL", set(), TIMES) == [(FLAG_EVENING, "evening")]
 
 
 def test_sebelum_jam_sore_tidak_ada_reminder():

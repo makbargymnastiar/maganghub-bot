@@ -6,8 +6,11 @@ from bot.status import (
     APPROVED,
     APPROVED_LEAVE,
     EMPTY,
+    FILLED_NOT_SUBMITTED,
     HOLIDAY,
     NEEDS_REVISION,
+    NAGGABLE_KEYS,
+    PARTIAL,
     PENDING_REVIEW,
     REJECTED,
     REVISION_SUBMITTED,
@@ -15,6 +18,7 @@ from bot.status import (
     ATTENDED_NO_LOG,
     log_badge,
     mentor_action_pending,
+    pending_detail,
     resolve,
 )
 
@@ -117,3 +121,79 @@ def test_log_badge():
     assert log_badge("COMPLETED") == "Selesai"
     assert log_badge("DRAFT") == "Draf"
     assert log_badge(None) == "Belum Diisi"
+
+
+# --- kelengkapan isi: aktivitas / pembelajaran / kendala ----------------------
+
+COMPLETE = {"activity_log": "Merakit PC", "lesson_learned": "Belajar ESD", "obstacles": ""}
+FULL = {"activity_log": "Merakit PC", "lesson_learned": "Belajar ESD", "obstacles": "Kabel kurang"}
+
+
+def test_draf_sudah_terisi_lengkap_dilapor_sudah_diisi():
+    """User mengisi tiga kolom tapi belum tekan kirim -> label "Sudah Diisi, Belum Dikirim"."""
+    record = rec(att(status="PRESENT", approval_status=None), daily={"state": "DRAFT", **FULL})
+    assert resolve(record) is FILLED_NOT_SUBMITTED
+
+
+def test_sebagian_terisi_bukan_belum_diisi():
+    record = rec(att(status="PRESENT", approval_status=None), daily={"state": "DRAFT", **COMPLETE})
+    assert resolve(record) is PARTIAL
+    assert record.missing_fields == ["kendala"]
+    assert record.filled_count == 2
+    assert record.content_complete is False
+
+
+def test_kendala_spasi_saja_dianggap_kosong():
+    blank = {"activity_log": "A", "lesson_learned": "B", "obstacles": "   "}
+    record = rec(att(status="PRESENT"), daily={"state": "DRAFT", **blank})
+    assert resolve(record) is PARTIAL
+
+
+def test_keputusan_mentor_tetap_menang_isian():
+    """Status final (APPROVED) tidak boleh kalah oleh label kelengkapan isi."""
+    record = rec(att(status="PRESENT", approval_status="APPROVED"), daily={"state": "APPROVED", **FULL})
+    assert resolve(record) is APPROVED
+
+
+def test_kehadiran_disetujui_tapi_uraian_kosong_masih_ditagih():
+    """Deviasi sadar dari frontend: ACC kehadiran != laporan harian selesai."""
+    approved_blank = rec(att(status="PRESENT", approval_status="APPROVED"), daily={"state": "DRAFT"})
+    assert resolve(approved_blank) is ATTENDED_NO_LOG
+    partial = rec(att(status="PRESENT", approval_status="APPROVED"), daily={"state": "DRAFT", **COMPLETE})
+    assert resolve(partial) is PARTIAL
+
+
+def test_hari_izin_tidak_ditagih_uraian():
+    """ON_LEAVE yang di-ACC tidak punya uraian yang perlu ditagih."""
+    record = rec(att(status="ON_LEAVE", approval_status="APPROVED"), daily=None)
+    assert resolve(record) is APPROVED_LEAVE
+
+
+def test_draf_tanpa_attendance_tetap_terlihat_kelengkapannya():
+    record = rec(attendance=None, daily={"state": "DRAFT", **FULL})
+    assert resolve(record) is FILLED_NOT_SUBMITTED
+
+
+def test_pending_detail_sebut_isian_yang_kosong():
+    record = rec(att(status="PRESENT"), daily={"state": "DRAFT", **COMPLETE})
+    assert pending_detail(record) == "Masih kosong: kendala"
+
+
+def test_pending_detail_bawa_catatan_mentor_saat_revisi():
+    record = rec(
+        att(status="PRESENT"),
+        daily={"state": "NEEDS_REVISION", "reviewer_notes": "Perjelas bagian kendala", **FULL},
+    )
+    assert pending_detail(record) == "Catatan mentor: Perjelas bagian kendala"
+
+
+def test_pending_detail_kosong_saat_semua_rapi():
+    assert pending_detail(rec(att(status="PRESENT"), daily={"state": "DRAFT", **FULL})) == ""
+
+
+def test_status_yang_ditagih_reminder():
+    assert NAGGABLE_KEYS == frozenset({"EMPTY", "ATTENDED_NO_LOG", "PARTIAL", "FILLED_NOT_SUBMITTED"})
+    assert FILLED_NOT_SUBMITTED.is_filled is False
+    assert PARTIAL.is_filled is False
+    assert APPROVED.is_filled is True
+    assert PENDING_REVIEW.is_filled is True

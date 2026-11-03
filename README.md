@@ -45,17 +45,66 @@ tools/bookmarklet.md  cara cepat mengambil token dari browser
 
 ## Cara kerja status
 
+Yang dikejar bot ini adalah **tiga isian harian di portal**: `activity_log`
+(aktivitas), `lesson_learned` (pembelajaran), `obstacles` (kendala) — nama kolom
+terkonfirmasi dari response `/api/v1/daily-logs`. Selama ketiganya belum lengkap,
+status masih ditagih reminder; begitu lengkap, bot mengirim "Sudah Diisi".
+
 Frontend monev menggabungkan **dua** objek untuk melabeli satu tanggal:
 `attendance` (`status`, `approval_status`) dan `daily-log` (`state`). Versi lama
 hanya membaca daily-log, sehingga label yang bergantung pada kehadiran tidak
-pernah aktif. `bot/status.py` menata ulang urutan pengecekan persis seperti
-frontend: `DAYOFF` → `ABSENT` → `NEEDS_REVISION` → `REJECTED` →
-`REVISION_SUBMITTED` → `COMPLETED` → `APPROVED` → `SUBMITTED` → fallback
-`Belum Diisi`.
+pernah aktif. `bot/status.py` menata ulang urutan pengecekan seperti frontend:
+`DAYOFF` → `ABSENT` → `NEEDS_REVISION` → `REJECTED` → `REVISION_SUBMITTED` →
+`COMPLETED` → kelengkapan isian → `APPROVED` → `SUBMITTED` → fallback.
+
+Satu **deviasi sadar** dari frontend: frontend sudah menulis "Hadir disetujui"
+begitu `attendance.approval_status == APPROVED`, padahal uraian harian boleh jadi
+masih kosong. Untuk bot pengingat, ACC kehadiran tidak dianggap menyelesaikan
+pekerjaan hari itu — jadi isian yang belum lengkap tetap ditandai
+🔵/🟡/🟣 (hari izin `ON_LEAVE` dikecualikan, karena tidak ada uraian yang ditagih).
+
+| Label | Emoji | Arti | Ditagih reminder? |
+| --- | --- | --- | --- |
+| Belum Diisi | ⚪ | belum ada absensi & laporan | ya |
+| Sudah Absen, Uraian Belum Diisi | 🔵 | kehadiran tercatat, isi masih kosong | ya |
+| Sebagian Terisi | 🟡 | 1–2 dari 3 kolom terisi (yang kosong disebutkan) | ya |
+| Sudah Diisi, Belum Dikirim | 🟣 | tiga kolom lengkap, tombol kirim belum ditekan | ya |
+| Menunggu Persetujuan | 📝 | terkirim, tunggu ACC mentor | tidak |
+| Perlu Tindakan Anda | 🟠 | mentor minta revisi (+ catatan dikirim bila ada) | tidak |
+| Perbaikan Menunggu Peninjauan | ⏳ | revisi sudah dikirim | tidak |
+| Hadir/Izin disetujui | ✅ / 🟢 | final | tidak |
+| Kehadiran Ditolak / Tidak Hadir | ❌ / ⛔ | perlu cek portal | tidak |
+| Hari Libur | 🗓️ | `DAYOFF` atau penanda libur dari `/home` | tidak |
+| Status Tidak Dikenal | ❔ | enum baru dari portal; bot kirim klaim mentahnya | tidak |
 
 Kalau API mengirim nilai enum yang belum dipetakan, label jadi `UNKNOWN` dan bot
 mengirim satu pesan berisi klaim mentahnya (`attendance.status=… log.state=…`)
 supaya mapping bisa dikalibrasi, bukan didiamkan.
+
+## Mengisi token lewat Telegram
+
+Token disimpan di DB, jadi penggantiannya cukup dari chat — tanpa SSH, tanpa restart:
+
+1. Ambil token dari browser tempat Anda login monev (lihat
+   [`tools/bookmarklet.md`](tools/bookmarklet.md) — cara tercepat).
+2. Kirim ke bot:
+   ```
+   /token Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9....
+   ```
+   Prefiks `Bearer ` boleh dipakai boleh tidak, dan menempel token polos tanpa
+   perintah (pesan yang dimulai `eyJ0eXAi…`) juga diterima.
+3. Bot memanggil `/api/v1/users/me/home` dengan token itu sebagai uji. Kalau lolos,
+   token disimpan + flag `token_invalid` dibersihkan + balasan berisi sisa umur
+   sesi; kalau ditolak, token lama tidak tertimpa dan bot langsung menjelaskan penyebabnya.
+
+Cara lain (bila Telegram sedang tidak bisa diakses):
+
+```bash
+python run.py --set-token "Bearer eyJ0eXAi…"   # validasi + simpan ke DB, lalu bot jalan
+```
+
+Isi `BEARER_TOKEN` di `config.py` hanya dipakai sebagai seed saat DB belum punya
+user; setelah token masuk lewat `/token`, yang dipercaya adalah token di DB.
 
 ## Konfigurasi
 
@@ -126,7 +175,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 35 test: status mapping, diff polling, reminder plan, b64/JWT/settings
+python -m pytest -q                # 47 test: status mapping, diff polling, reminder plan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 ```

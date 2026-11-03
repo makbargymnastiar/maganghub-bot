@@ -18,13 +18,13 @@ import aiosqlite
 from .. import store
 from ..models import User
 from ..settings import Settings
-from ..status import ALL_LABELS, NEEDS_REVISION
+from ..status import ALL_LABELS, NAGGABLE_KEYS, NEEDS_REVISION
 from ..tg import format as fmt
 
 log = logging.getLogger("bot.reminder")
 
-# Hanya status ini yang layak ditagih reminder.
-NAGGABLE = {"EMPTY", "ATTENDED_NO_LOG"}
+# Hanya status ini yang layak ditagih reminder (satu sumber kebenaran: bot/status.py).
+NAGGABLE = set(NAGGABLE_KEYS)
 
 FLAG_EVENING = "evening"
 FLAG_FOLLOWUP = "followup"

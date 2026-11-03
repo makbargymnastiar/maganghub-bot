@@ -6,7 +6,7 @@ from datetime import datetime
 from html import escape
 from typing import Any, Iterable
 
-from ..status import Label
+from ..status import NAGGABLE_KEYS, Label
 
 WEEKDAY_ID = {
     0: "Senin",
@@ -64,10 +64,21 @@ def reminder_message(kind: str, log_date: str, label: Label) -> str:
             f"{day}: absensi tercatat, tapi uraian aktivitas masih kosong/draf.\n"
             f"Isi uraian aktivitas agar bisa di-ACC mentor."
         )
+    # Label baru (Sebagian Terisi / Sudah Diisi Belum Dikirim) ikut terbaca di sini
+    # karena pesannya diambil dari `label.action`, bukan teks generik.
+    tail = f"\n{esc(label.action)}" if label.action else ""
+    if label.key not in NAGGABLE_KEYS:
+        # Bukan untuk ditagih; dipakai hanya bila ada pemanggilan tak terduga,
+        # jadi jangan klaim "belum lengkap".
+        return (
+            f"🔔 <b>Pengingat laporan magang</b>\n"
+            f"{day} status tercatat: <b>{esc(label.title)}</b>.{tail}\n"
+            f"Cek portal monev bila tampak aneh."
+        )
     return (
         f"🔔 <b>Pengingat laporan magang</b>\n"
-        f"{day} belum diisi ({esc(label.title)}).\n"
-        f"Isi absensi + uraian aktivitas sebelum malam."
+        f"{day} belum lengkap ({esc(label.title)}).{tail}\n"
+        f"Isi aktivitas, pembelajaran, dan kendala sebelum hari berganti."
     )
 
 
@@ -161,6 +172,10 @@ def help_text(username: str) -> str:
         "/interval &lt;menit&gt; — ubah frekuensi polling (min 5)\n"
         "/log [n] — n event terakhir (default 10)\n"
         "/help — pesan ini\n\n"
+        "<b>Yang dipantau</b>: tiga isian harian portal — aktivitas, pembelajaran, "
+        "kendala. Selama masih ada yang kosong atau belum dikirim, bot mengingatkan.\n"
+        "Begitu lengkap bot lapor “Sudah Diisi”, lalu kabari juga kalau status "
+        "berubah (menunggu ACC, di-ACC, diminta revisi, ditolak).\n\n"
         f"Token bisa juga dikirim tanpa perintah: cukup tempel string <code>eyJ0eXAi…</code>.\n"
         f"Bot hanya membaca portal, tidak mengisi laporan."
     )

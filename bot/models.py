@@ -21,6 +21,15 @@ class User:
     reminders_on: bool = True
 
 
+# Tiga kolom yang diisi peserta di portal monev. Terkunci dari data nyata (HAR):
+# daily-log punya keys activity_log, lesson_learned, obstacles, state, reviewer_notes.
+LOG_FIELDS: tuple[tuple[str, str], ...] = (
+    ("activity_log", "aktivitas"),
+    ("lesson_learned", "pembelajaran"),
+    ("obstacles", "kendala"),
+)
+
+
 @dataclass
 class DayRecord:
     """Kondisi satu tanggal, gabungan `home` + `attendances` + `daily-logs`."""
@@ -50,6 +59,29 @@ class DayRecord:
     @property
     def has_log(self) -> bool:
         return self.log is not None
+
+    @property
+    def filled_count(self) -> int:
+        """Berapa dari tiga isian yang sudah ada teksnya (spasi saja dianggap kosong)."""
+        if not self.log:
+            return 0
+        return sum(1 for key, _ in LOG_FIELDS if str(self.log.get(key) or "").strip())
+
+    @property
+    def missing_fields(self) -> list[str]:
+        """Nama isian yang masih kosong, dalam urutan portal: aktivitas, pembelajaran, kendala."""
+        if not self.log:
+            return [label for _, label in LOG_FIELDS]
+        return [label for key, label in LOG_FIELDS if not str(self.log.get(key) or "").strip()]
+
+    @property
+    def content_complete(self) -> bool:
+        return self.log is not None and self.filled_count == len(LOG_FIELDS)
+
+    @property
+    def reviewer_notes(self) -> str:
+        """Catatan mentor; ikut terkirim saat status minta revisi."""
+        return str((self.log or {}).get("reviewer_notes") or "").strip()
 
 
 @dataclass
