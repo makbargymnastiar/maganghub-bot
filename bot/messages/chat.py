@@ -5,24 +5,41 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from ..monev.status import ALL_LABELS, Label
-from .base import esc, pretty_date
+from .base import day_name, esc, numeric_date, pretty_date
 
 # Jadwal berjenjang ditampilkan apa adanya — memang tidak bisa diubah dari chat.
 REMINDER_SCHEDULE = (
-    "🕠 16:55 cek sore · 🔔 18:00–20:59 tiap 30 mnt · ⏰ 21:00–23:29 tiap 15 mnt · "
-    "🚨 23:30–23:45 tiap 5 mnt · 🆘 23:46–23:59 tiap 3 mnt · ❗ 00:01 kemarin terlewat"
+    "🌅 08:00 pengingat pagi logbook · 🕠 16:55 cek sore · 🔔 18:00–20:59 tiap 30 mnt · "
+    "⏰ 21:00–23:29 tiap 15 mnt · 🚨 23:30–23:45 tiap 5 mnt · 🆘 23:46–23:59 tiap 3 mnt"
 )
 MORNING_SCHEDULE = (
     "🗓️ 08:00 info libur · ⏳ tagihan ACC ≥5 hari · 📊 evaluasi H-7 (tgl 2–8) · "
     "💸 uang saku (tgl 9)"
 )
 
+# Nama & emoji tampilan /status dan /rekap per template review user (2026-11-05).
+# Label internal yang tidak disebut di sini tetap pakai judul aslinya di status.py.
+STATUS_DISPLAY: dict[str, tuple[str, str]] = {
+    "APPROVED": ("✅", "Disetujui"),
+    "EMPTY": ("⚠️", "Belum Isi Absensi"),
+    "ATTENDED_NO_LOG": ("⚠️", "Belum Isi Absensi"),
+    "PENDING_REVIEW": ("⏳", "Menunggu ACC Mentor"),
+    "NEEDS_REVISION": ("🟠", "Perlu Revisi"),
+    "HOLIDAY": ("🗓️", "Hari Libur"),
+}
+
+
+def _display(label: Label) -> tuple[str, str]:
+    """(emoji, judul) versi chat — sesuai template, fallback ke label umum."""
+    return STATUS_DISPLAY.get(label.key, (label.emoji, label.title))
+
 
 def help_text(username: str) -> str:
     return (
         "🤖 <b>Bot Pengingat Absensi Maganghub</b>\n\n"
         "<b>Perintah</b>\n"
-        "/status — status hari ini + riwayat 7 hari\n"
+        "/status — status absensi hari ini\n"
+        "/rekap — riwayat absensi 5 hari terakhir\n"
         "/cek — paksa cek sekarang (lapor perubahan)\n"
         "/token &lt;Bearer …&gt; — ganti token sesi monev\n"
         "/cookie &lt;monev_refresh_token&gt; — aktifkan perpanjangan token otomatis\n"
@@ -51,40 +68,47 @@ def start_card(
     token_ok: bool,
     refresh_ok: bool,
 ) -> str:
+    status_token = "✅ Tersimpan 🔒" if token_ok else "❌ Belum ada — kirim /token"
+    status_cookie = "✅ Aktif" if refresh_ok else "❌ Belum — kirim /cookie"
     return (
         "🤖 <b>Bot pengingat absensi Maganghub aktif</b>\n"
         f"Chat: <code>{esc(chat_id)}</code>\n"
         f"Participant: <code>{esc(participant_id[:8])}…</code>\n"
-        f"Base URL: {esc(base_url)}\n"
-        f"Polling: {poll_minutes} menit · Reminder: terkunci 16:55 + berjenjang "
-        f"18:00–23:59 + pagi 08:00 ({esc(tz_name)})\n"
-        f"Token: {'✅ tersimpan' if token_ok else '❌ belum ada — kirim /token'}\n"
-        f"Auto-refresh: {'✅ aktif (tanpa input token lagi)' if refresh_ok else '❌ belum — kirim /cookie'}\n\n"
+        f"Base URL: {esc(base_url)}\n\n"
+        f"⏱️ <b>Konfigurasi Jadwal</b> ({esc(tz_name)}):\n"
+        f"• Polling API: Tiap {poll_minutes} menit\n"
+        "• Cek Sore: 16:55\n"
+        "• Pengingat Berjenjang: 18:00–23:59\n"
+        "• Info Pagi: 08:00\n\n"
+        "🔒 <b>Status Sesi Auth</b>:\n"
+        f"• Token: {status_token}\n"
+        f"• Auto-refresh: {status_cookie}\n\n"
         "Ketik /help untuk daftar perintah."
     )
 
 
-def status_table(
-    today: str,
-    today_label: Label,
-    rows: Iterable[Any],
-    header_note: str = "",
-) -> str:
+def status_today(today: str, label: Label, header_note: str = "") -> str:
+    """/status — hanya status hari ini (riwayat pindah ke /rekap)."""
+    emoji, title = _display(label)
     lines = [
-        f"📊 <b>Status absensi</b> — hari ini {pretty_date(today)}: "
-        f"{today_label.emoji} {esc(today_label.title)}"
+        "📊 <b>STATUS ABSENSI HARI INI</b>",
+        f"📅 {pretty_date(today)}",
+        f"Status: {emoji} {esc(title)}",
     ]
     if header_note:
-        lines.append(f"<i>{esc(header_note)}</i>")
-    lines.append("")
+        lines.append(f"⚠️ <i>{esc(header_note)}</i>")
+    return "\n".join(lines)
+
+
+def rekap_history(rows: Iterable[Any]) -> str:
+    """/rekap — riwayat 5 hari terakhir: '- Kamis, 05/11 — ✅ Disetujui'."""
+    lines = ["📜 <b>RIWAYAT ABSENSI MAGANGHUB</b>"]
     any_row = False
     for row in rows:
         any_row = True
-        label = _label_by_key(row["label"])
-        lines.append(
-            f"{pretty_date(row['log_date'])} — "
-            f"{label.emoji} {esc(label.title)} <i>({esc(row['log_state'] or '-')})</i>"
-        )
+        emoji, title = _display(_label_by_key(row["label"]))
+        day = row["log_date"]
+        lines.append(f"- {day_name(day)}, {numeric_date(day)} — {emoji} {esc(title)}")
     if not any_row:
         lines.append("Belum ada riwayat tersimpan. Jalankan /cek untuk mengisi.")
     return "\n".join(lines)
@@ -114,7 +138,7 @@ def not_jwt_message() -> str:
 
 
 def token_active_hint(date_hint: str) -> str:
-    return f"🔑 Token aktif. Portal melaporkan tanggal <b>{esc(date_hint)}</b>."
+    return f"🔑 Token aktif 🔒. Portal melaporkan tanggal <b>{esc(date_hint)}</b>."
 
 
 def cek_no_token_message() -> str:
@@ -139,7 +163,7 @@ def cek_changes_message(changes: list[tuple[str, str]]) -> str:
     lines = [f"🔄 {len(changes)} perubahan tercatat:"]
     for day, key in changes:
         label = ALL_LABELS.get(key)
-        lines.append(f"• {pretty_date(day)} → {esc(label.title if label else key)}")
+        lines.append(f"- {pretty_date(day)} → {esc(label.title if label else key)}")
     return "\n".join(lines)
 
 

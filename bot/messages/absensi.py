@@ -9,27 +9,29 @@ from .base import esc, pretty_date
 def status_change_message(label: Label, log_date: str, mentor_notes: str = "") -> str:
     """Satu format untuk SEMUA status: judul, tanggal, catatan mentor ('-' bila kosong).
 
-    Dulu ada baris "Tindakan:" — di portal tidak ada istilah itu; yang ada hanya
-    catatan mentor, jadi baris itu diganti `Catatan mentor` dan hanya revisi yang
-    dapat petunjuk tindakan.
+    Template kalimat fix (review user 2026-11): "📊 PERUBAHAN STATUS ABSENSI" +
+    baris status/tanggal/catatan; hanya revisi yang dapat petunjuk tindakan.
     """
     notes = (mentor_notes or "").strip()
     lines = [
-        f"<b>{label.emoji} {esc(label.title)}</b>",
-        f"📅 <b>{pretty_date(log_date)}</b>",
-        f"📝 Catatan mentor: <i>{esc(notes) if notes else '-'}</i>",
+        "📊 <b>PERUBAHAN STATUS ABSENSI</b>",
+        "",
+        f"{label.emoji} Status: <b>{esc(label.title)}</b>",
+        f"📅 Tanggal: {pretty_date(log_date)}",
+        f"💬 Catatan Mentor: <i>{esc(notes) if notes else '-'}</i>",
     ]
     if label.key == "NEEDS_REVISION":
-        lines.append("→ Perbaiki lalu kirim ulang di portal.")
+        lines.append("👉 Perbaiki logbook lalu kirim ulang di portal.")
     return "\n".join(lines)
 
 
 def revision_followup_message(log_date: str, hours: int) -> str:
     return (
-        f"🟠 <b>Revisi belum dikerjakan</b>\n"
-        f"Uraian {pretty_date(log_date)} diminta diperbaiki mentor dan sudah "
-        f"berlalu {hours} jam tanpa perubahan.\n"
-        f"Segera perbaiki lalu kirim ulang."
+        "🟠 <b>REVISI BELUM DIKERJAKAN</b>\n\n"
+        f"📅 Tanggal: {pretty_date(log_date)}\n"
+        f"⏳ Logbook diminta revisi oleh mentor dan sudah berlalu {hours} jam "
+        "tanpa perubahan.\n\n"
+        "Segera perbaiki dan kirim ulang di portal."
     )
 
 

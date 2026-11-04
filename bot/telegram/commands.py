@@ -20,7 +20,7 @@ from ..messages import chat, sesi
 from ..messages.base import esc
 from ..monev import endpoints
 from ..monev.client import MonevClient, MonevError, TokenRejected
-from ..monev.jwt_utils import fingerprint, looks_like_jwt, session_user, ttl_seconds
+from ..monev.jwt_utils import fingerprint, looks_like_jwt, ttl_seconds
 from ..monev.status import ALL_LABELS
 from ..models import User
 from ..settings import Settings, mask_token, normalize_cookie
@@ -218,49 +218,68 @@ async def cmd_status(ctx: BotContext, args: str = "") -> str:
     user = await ctx.user()
     now = ctx.settings.now()
     today = now.date().isoformat()
-    since = (now.date() - timedelta(days=7)).isoformat()
-    rows = await store.list_day_states(ctx.db, user.tg_chat_id, since, limit=10)
-    current = next((r for r in rows if r["log_date"] == today), None)
+    rows = await store.list_day_states(ctx.db, user.tg_chat_id, today, limit=1)
+    current = rows[0] if rows and rows[0]["log_date"] == today else None
     label = ALL_LABELS.get(current["label"]) if current else ALL_LABELS["EMPTY"]
     note = ""
     if user.token_invalid:
-        note = "Token tidak aktif — data di bawah mungkin basi. Kirim /token baru."
-    return chat.status_table(today, label, rows, note)
+        note = "Token tidak aktif — data di atas mungkin basi. Kirim /token baru."
+    return chat.status_today(today, label, note)
+
+
+async def cmd_rekap(ctx: BotContext, args: str = "") -> str:
+    """Riwayat 5 tanggal terakhir, format daftar ringkas (template review user)."""
+    user = await ctx.user()
+    now = ctx.settings.now()
+    since = (now.date() - timedelta(days=10)).isoformat()
+    rows = await store.list_day_states(ctx.db, user.tg_chat_id, since, limit=30)
+    # baris terbaru dulu (urutan store DESC) — tampilkan 5 hari, tanpa duplikat tanggal
+    seen: set[str] = set()
+    recent = []
+    for r in rows:
+        if r["log_date"] in seen:
+            continue
+        seen.add(r["log_date"])
+        recent.append(r)
+        if len(recent) == 5:
+            break
+    return chat.rekap_history(recent)
 
 
 async def cmd_tokeninfo(ctx: BotContext, args: str = "") -> str:
+    """/tokeninfo — format template review user (2026-11-05): INFO SESI & TOKEN."""
     user = await ctx.user()
-    claims_user = session_user(user.bearer_token)
-    left = token_health.minutes_left(user, ctx.settings.now())
-    lines = [
-        "🔎 <b>Info token</b>",
-        f"Token: <code>{esc(mask_token(user.bearer_token))}</code>",
-        f"Status: {'❌ ditolak server' if user.token_invalid else '✅ aktif'}",
-        f"Fingerprint: <code>{esc(user.token_fingerprint[:12] or '-')}</code>",
-        f"user claim: <code>{esc(claims_user[:8] or '-')}</code>",
-        f"Umur tersimpan: {user.token_ttl_seconds // 3600} jam",
-    ]
-    if user.token_saved_at:
-        lines.append(f"Disimpan: {esc(user.token_saved_at.strftime('%d-%m-%Y %H:%M'))} WIB")
-    if left is not None:
-        lines.append(f"Perkiraan sisa: {left} menit")
+    now = ctx.settings.now()
+    lines = ["🔎 <b>INFO SESI &amp; TOKEN</b>", ""]
+    if user.bearer_token:
+        lines.append("🔑 Token Akses: 🔒 Tersimpan")
+        lines.append("Status: ❌ Ditolak server" if user.token_invalid else "Status: ✅ Aktif")
+        lines.append("🛡️ Sesi ID: 🔐 Terverifikasi")
+        if user.token_saved_at:
+            lines.append(f"⏱️ Disimpan: {esc(user.token_saved_at.strftime('%d-%m-%Y %H:%M'))} WIB")
+        else:
+            lines.append("⏱️ Disimpan: tidak tercatat (token dari config.py sebelum migrasi)")
+        left = token_health.minutes_left(user, now)
+        if left is not None:
+            lines.append(f"⏳ Perkiraan Sisa: {left} menit")
+        else:
+            lines.append("⏳ Perkiraan Sisa: tidak diketahui")
     else:
-        lines.append("Perkiraan sisa: tidak diketahui (token dari config.py sebelum migrasi)")
+        lines.append("🔑 Token Akses: ❌ Belum ada — kirim /token atau /cookie")
+    lines.append("")
     if user.can_auto_refresh:
-        saved = (
-            f" (sejak {user.refresh_saved_at.strftime('%d-%m-%Y %H:%M')})"
-            if user.refresh_saved_at
-            else ""
-        )
+        lines.append("🔄 Auto-refresh: 🔒 Cookie Aktif")
         lines.append(
-            f"Auto-refresh: ✅ cookie <code>{esc(mask_token(user.refresh_cookie))}</code>{saved}"
+            f"Bot memperpanjang token otomatis saat sisa ≤ "
+            f"{ctx.settings.token_refresh_lead_minutes} menit."
         )
-        lines.append(f"Bot memperpanjang token sendiri saat sisa ≤ {ctx.settings.token_refresh_lead_minutes} menit.")
     else:
+        lines.append("🔄 Auto-refresh: ❌ Belum Ada Cookie")
         lines.append(
-            "Auto-refresh: ❌ belum ada cookie — token harus ditempel manual tiap ±6 jam."
+            "Token harus ditempel manual tiap ±6 jam. Supaya otomatis, kirim "
+            "<code>/cookie &lt;nilai&gt;</code>."
         )
-        lines.append("Supaya tidak perlu input ulang: kirim <code>/cookie &lt;nilai&gt;</code> (caranya: /panduan).")
+    lines.append("")
     lines.append("Lupa caranya? Ketik <code>/panduan</code>.")
     return "\n".join(lines)
 
@@ -308,6 +327,7 @@ async def cmd_start(ctx: BotContext, args: str = "") -> str:
 HANDLERS: dict[str, Any] = {
     "start": cmd_start,
     "status": cmd_status,
+    "rekap": cmd_rekap,
     "cek": cmd_cek,
     "tokeninfo": cmd_tokeninfo,
     "cookie": cmd_cookie,

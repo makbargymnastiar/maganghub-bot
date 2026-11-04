@@ -11,23 +11,23 @@ def day_off_message(log_date: str, from_portal: bool = False) -> str:
     day = pretty_date(log_date)
     if from_portal:
         return (
-            "🗓️ <b>Hari Ini Libur</b>\n"
-            f"{day} — portal menandai hari ini sebagai libur.\n"
-            "Tidak perlu mengisi monev hari ini."
+            "🗓️ <b>HARI INI LIBUR</b>\n\n"
+            f"📅 {day} — tidak ada pengisian monev harian hari ini.\n"
+            "Selamat beristirahat! 💤"
         )
     return (
-        "🗓️ <b>Hari Ini Libur</b>\n"
-        f"{day} — tidak ada pengisian monev harian hari ini.\n"
-        "Selamat akhir pekan, istirahat yang cukup 💤 Pengingat aktif lagi Senin pagi."
+        "🗓️ <b>HARI INI LIBUR</b>\n\n"
+        f"📅 {day} — tidak ada pengisian monev harian hari ini.\n"
+        "Selamat beristirahat! 💤 Pengingat aktif lagi Senin pagi."
     )
 
 
 def eval_reminder_message(days_left: int) -> str:
     """Tanggal 2–8: mengingatkan evaluasi mentor menjelang pengajuan tanggal 9."""
     return (
-        f"📊 <b>Evaluasi Magang — H-{days_left} sebelum tanggal 9</b>\n"
+        f"📊 <b>EVALUASI MAGANG — H-{days_left} (TANGGAL 9)</b>\n\n"
         "Mentor harus mengisi evaluasi magang sebelum periode pengajuan "
-        "uang saku (tanggal 9).\n"
+        "uang saku (Tanggal 9).\n"
         "Ingatkan mentor hari ini kalau evaluasinya belum terisi."
     )
 
@@ -35,7 +35,7 @@ def eval_reminder_message(days_left: int) -> str:
 def stipend_message() -> str:
     """Tanggal 9: hari-H pengajuan uang saku."""
     return (
-        "💸 <b>Hari-H Pengajuan Uang Saku (tanggal 9)</b>\n"
+        "💸 <b>HARI-H PENGAJUAN UANG SAKU (TANGGAL 9)</b>\n\n"
         "Sudah pukul 08:00 WIB. Ajukan uang saku magangmu di portal SEKARANG — "
         "biasanya ada batas waktu pengisian di tanggal 9.\n"
         "Pastikan evaluasi mentor sudah terisi dulu, baru submit pengajuan."

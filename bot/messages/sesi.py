@@ -49,44 +49,34 @@ def token_guide_text() -> str:
 
 def token_expired_message(reason: str) -> str:
     return (
-        "⚠️ <b>Token monev tidak berlaku lagi</b>\n"
-        f"Penyebab: {esc(reason)}\n\n"
-        "Cara isi ulang (±30 detik, tanpa SSH):\n"
-        "1. Buka <code>monev.maganghub.kemnaker.go.id</code> dan login seperti biasa di browser.\n"
-        "2. Tekan <code>F12</code> → tab <code>Console</code> → tempel snippet “Cara A” dari\n"
-        "   <code>tools/bookmarklet.md</code> (di server: <code>/opt/monev-bot/tools/bookmarklet.md</code>)\n"
-        "   → token otomatis tersalin ke clipboard.\n"
-        "3. Paste di chat ini dengan awalan <code>/token</code> — atau tempel polos, bot\n"
-        "   mengenalinya dari awalan <code>eyJ0eXAi</code>.\n"
-        "4. Tunggu “✅ Token tersimpan &amp; tervalidasi”. Polling dan reminder lanjut sendiri,\n"
-        "   tanpa restart service.\n\n"
-        "Sambil menunggu, pantauan tanggal-tanggal sebelumnya tetap aman di database.\n"
-        "Supaya ini tidak terulang: kirim cookie refresh — lihat <code>/cookie</code>."
+        "⚠️ <b>TOKEN MONEV TIDAK BERLAKU</b>\n"
+        f"📌 Penyebab: {esc(reason)}\n\n"
+        "Kirim ulang token via <code>/token &lt;token&gt;</code> atau perbarui "
+        "cookie refresh via <code>/cookie &lt;refresh_token&gt;</code>."
     )
 
 
 def token_warning_message(minutes_left: int) -> str:
     return (
-        f"⏳ <b>Token mendekati kedaluwarsa</b>\n"
-        f"Perkiraan sisa umur: {minutes_left} menit (sesi monev berlaku ±6 jam dan "
-        "otomatis mati saat Anda login ulang).\n"
-        "Siapkan token baru lewat <code>/token</code> supaya pantauan tidak bolong."
+        f"⏳ <b>TOKEN MENDEKATI KEDALUWARSA</b>\n"
+        f"Perkiraan sisa umur: ±{minutes_left} menit.\n"
+        "Siapkan token baru via <code>/token</code> agar pemantauan tidak terputus."
     )
 
 
 def token_saved_message(masked: str, ttl_minutes: int, fingerprint: str) -> str:
+    """Nilai token sengaja tidak ditampilkan — pola sama seperti /tokeninfo."""
     return (
-        "✅ <b>Token tersimpan & tervalidasi</b>\n"
-        f"Token: <code>{esc(masked)}</code>\n"
-        f"Perkiraan umur: {ttl_minutes} menit\n"
-        f"Fingerprint sesi: <code>{esc(fingerprint[:12] or '-')}</code>"
+        "✅ <b>TOKEN TERBACA &amp; TERVALIDASI</b> 🔒\n"
+        "Status: ✅ Aktif\n"
+        f"⏳ Perkiraan Umur: ±{ttl_minutes} menit\n\n"
+        "Polling &amp; reminder lanjut otomatis, tanpa restart."
     )
 
 
 def cookie_saved_message(masked: str, ttl_minutes: int) -> str:
     return (
-        "🍪 <b>Cookie refresh tersimpan</b>\n"
-        f"Cookie: <code>{esc(masked)}</code>\n"
+        "🍪 <b>Cookie refresh tersimpan</b> 🔒\n"
         f"Token akses terakhir berlaku ±{ttl_minutes} menit, tapi sekarang bot yang "
         "memperbaruinya sendiri lewat <code>/api/v1/auth/refresh</code>.\n\n"
         "Mulai sekarang Anda tidak perlu mengirim token lagi — kecuali kalau sesi "

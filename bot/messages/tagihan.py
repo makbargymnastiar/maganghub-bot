@@ -12,8 +12,8 @@ def pending_mentor_message(dates: list[str], days: int) -> str:
     if len(dates) > 10:
         shown += f", … ({len(dates) - 10} lainnya)"
     return (
-        f"⏳ <b>Menunggu ACC Mentor — sudah {days} hari</b>\n"
-        f"📅 Tanggal: {shown}\n"
-        f"Sudah {days}+ hari tanpa persetujuan mentor.\n"
-        "Bot cek ulang otomatis tiap siklus polling — pengingat berhenti sendiri begitu di-ACC."
+        f"⏳ <b>MENUNGGU ACC MENTOR ({days} HARI)</b>\n\n"
+        f"📅 Daftar Tanggal:\n{shown}\n\n"
+        f"📌 Sudah {days}+ hari tanpa persetujuan mentor.\n"
+        "(Pengingat otomatis berhenti begitu status di-ACC)."
     )

@@ -23,7 +23,7 @@ from ..messages import absensi
 from ..monev import endpoints
 from ..monev.client import MonevClient
 from ..models import DayRecord, User
-from ..monev.status import UNKNOWN, Label, resolve, unknown_detail
+from ..monev.status import NAGGABLE_KEYS, UNKNOWN, Label, resolve, unknown_detail
 from ..settings import Settings
 
 log = logging.getLogger("bot.poll")
@@ -160,6 +160,16 @@ async def run_poll(
 
         if is_first_run or not notify_changes:
             result.notes.append(f"seed {record.date} -> {label.key}")
+            continue
+
+        # pergantian hari: record hari baru pertama kali hampir selalu EMPTY —
+        # bukan perubahan nyata, cukup catat; penagihan pagi handled reminder_pagi 08:00
+        if (
+            record.date == today.isoformat()
+            and previous is None
+            and label.key in NAGGABLE_KEYS
+        ):
+            result.notes.append(f"day-rollover {record.date} -> {label.key} (silent)")
             continue
 
         # Tanggal lama yang berubah di luar jendela notifikasi: catat, jangan kirim.

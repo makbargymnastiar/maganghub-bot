@@ -1,6 +1,7 @@
 """Job pengingat harian — jadwal TERKUNCI, tidak bisa diubah/dimatikan dari chat.
 
 Aturan yang dijalankan (kalimat aslinya ada di bot/messages/pengisian.py dkk):
+- 08:00            1x: pengingat pagi logbook (hari kerja saja)
 - 16:55            cek sore, 1x — menagih yang belum / menandai yang sudah diisi
 - 18:00–20:59      tiap 30 menit selama isian belum lengkap
 - 21:00–23:29      tiap 15 menit (jam rawan ketiduran)
@@ -212,6 +213,16 @@ async def run_morning(
             await _send(
                 db, uid, today_iso, "day_off",
                 harian.day_off_message(today_iso, from_portal=portal_holiday), notify, now,
+            )
+        )
+
+    # 5a2) Pengingat pagi logbook — hari kerja saja, sekali per hari; libur
+    #      sudah punya pesan sendiri (day_off) jadi tidak berdua-duaan.
+    if not (weekend or portal_holiday) and not await store.flag_exists(db, uid, today_iso, "reminder_pagi"):
+        sent.append(
+            await _send(
+                db, uid, today_iso, "reminder_pagi",
+                pengisian.morning_message(today_iso), notify, now,
             )
         )
 

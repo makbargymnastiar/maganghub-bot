@@ -72,3 +72,19 @@ def short_date(iso_date: str) -> str:
     if dt is None:
         return esc(iso_date)
     return f"{dt.day:02d} {MONTHS_SHORT[dt.month - 1]}"
+
+
+def numeric_date(iso_date: str) -> str:
+    """'2026-11-04' → '04/11' — pasangan nama hari di daftar riwayat (/rekap)."""
+    dt = _parse(iso_date)
+    if dt is None:
+        return esc(iso_date)
+    return f"{dt.day:02d}/{dt.month:02d}"
+
+
+def day_name(iso_date: str) -> str:
+    """'2026-11-03' → 'Selasa' — nama hari Indonesia saja."""
+    dt = _parse(iso_date)
+    if dt is None:
+        return ""
+    return WEEKDAY_ID[dt.weekday()]

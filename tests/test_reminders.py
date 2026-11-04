@@ -112,7 +112,7 @@ async def test_berjenjang_kirim_lalu_hening_sampai_selang_waktu(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(18, 0))
         assert sent == ["rem_soft"]
-        assert "Pengingat Absensi" in tg.messages[-1][1]
+        assert "PENGINGAT ABSENSI" in tg.messages[-1][1]
         # tick berikutnya dalam menit yang sama / sebelum 30 menit → diam
         assert await run_reminders(db, settings, user, tg, now=at(18, 29)) == []
         assert await run_reminders(db, settings, user, tg, now=at(18, 30)) == ["rem_soft"]
@@ -129,13 +129,40 @@ async def test_status_lengkap_tidak_ditagih(tmp_path):
         await db.close()
 
 
+async def test_pengingat_pagi_hari_kerja_sekali(tmp_path):
+    # 2026-11-04 = Rabu (hari kerja) → 08:00 dapat PENGINGAT PAGI ABSENSI, sekali saja
+    settings, user, db = await make_env(tmp_path, "2026-11-04", "EMPTY", name="pagi.db")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-04"))
+        assert "reminder_pagi" in sent
+        text = next(t for _, t in tg.messages if "PENGINGAT PAGI ABSENSI" in t)
+        assert "Yuk catat logbook hari ini:" in text
+        assert "• Uraian Aktivitas" in text and "Bismillah, selamat beraktivitas!" in text
+        assert await run_reminders(db, settings, user, tg, now=at(9, 0, day="2026-11-04")) == []
+    finally:
+        await db.close()
+
+
+async def test_pengingat_pagi_diam_saat_libur(tmp_path):
+    # 2026-11-07 = Sabtu → hanya day_off, tidak ada pengingat logbook
+    settings, user, db = await make_env(tmp_path, "2026-11-07", "EMPTY", name="libur.db")
+    tg = Notify()
+    try:
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-07"))
+        assert "reminder_pagi" not in sent
+        assert "PENGINGAT PAGI" not in " ".join(t for _, t in tg.messages)
+    finally:
+        await db.close()
+
+
 async def test_cek_sore_dua_kondisi_sekali_sehari(tmp_path):
     settings, user, db = await make_env(tmp_path, "2026-11-03", "EMPTY")
     tg = Notify()
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(16, 55))
         assert sent == ["sore_check"]
-        assert "belum lengkap" in tg.messages[-1][1]
+        assert "Absensi Hari Ini Belum Diisi" in tg.messages[-1][1]
         assert await run_reminders(db, settings, user, tg, now=at(17, 0)) == []
     finally:
         await db.close()
@@ -144,7 +171,7 @@ async def test_cek_sore_dua_kondisi_sekali_sehari(tmp_path):
     tg = Notify()
     try:
         await run_reminders(db, settings, user, tg, now=at(16, 56, day="2026-11-04"))
-        assert "sudah terisi lengkap" in tg.messages[-1][1]
+        assert "Logbook Harian Lengkap" in tg.messages[-1][1]
     finally:
         await db.close()
 
@@ -156,7 +183,7 @@ async def test_kemarin_terlewat_sekali_saja(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(0, 30))
         assert "missed_yesterday" in sent
-        assert "Kemarin Terlewat" in tg.messages[-1][1]
+        assert "ABSENSI TERLEWAT" in tg.messages[-1][1]
         assert await run_reminders(db, settings, user, tg, now=at(1, 0)) == []
     finally:
         await db.close()
@@ -169,8 +196,8 @@ async def test_paket_libur_akhir_pekan(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-07"))
         assert "day_off" in sent
-        assert "Hari Ini Libur" in tg.messages[0][1]
-        assert "akhir pekan" in tg.messages[0][1]
+        assert "HARI INI LIBUR" in tg.messages[0][1]
+        assert "Selamat beristirahat!" in tg.messages[0][1]
         assert await run_reminders(db, settings, user, tg, now=at(9, 0, day="2026-11-07")) == []
     finally:
         await db.close()
@@ -184,10 +211,10 @@ async def test_tagihan_acc_lima_hari(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0))
         assert "pending_tagihan" in sent
-        text = next(t for _, t in tg.messages if "Menunggu ACC Mentor" in t)
+        text = next(t for _, t in tg.messages if "MENUNGGU ACC MENTOR" in t)
         # hanya 27 & 28 Okt yang berusia ≥5 hari per 3 Nov; 01 Nov belum cukup tua
         assert "27 Okt" in text and "28 Okt" in text and "01 Nov" not in text
-        assert "sudah 7 hari" in text
+        assert "(7 HARI)" in text
     finally:
         await db.close()
 
@@ -210,7 +237,7 @@ async def test_eval_h_minus_dan_uang_saku(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-05"))
         assert "eval_reminder" in sent
-        assert "H-4" in next(t for _, t in tg.messages if "Evaluasi Magang" in t)
+        assert "H-4" in next(t for _, t in tg.messages if "EVALUASI MAGANG" in t)
     finally:
         await db.close()
 
@@ -219,6 +246,6 @@ async def test_eval_h_minus_dan_uang_saku(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-09"))
         assert "stipend" in sent
-        assert "Pengajuan Uang Saku" in next(t for _, t in tg.messages if "Uang Saku" in t)
+        assert "PENGAJUAN UANG SAKU" in next(t for _, t in tg.messages if "UANG SAKU" in t)
     finally:
         await db.close()

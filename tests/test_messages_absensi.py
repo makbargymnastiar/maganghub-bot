@@ -51,16 +51,17 @@ async def poll_once(database, settings, user, log, notify):
 
 def test_format_notif_status_baru():
     msg = absensi.status_change_message(APPROVED, "2026-11-03")
-    assert "✅" in msg and "Hadir Disetujui" in msg
-    assert "📅 <b>Selasa, 03 November 2026</b>" in msg
-    assert "📝 Catatan mentor: <i>-</i>" in msg
+    assert "📊 <b>PERUBAHAN STATUS ABSENSI</b>" in msg
+    assert "✅ Status: <b>Hadir Disetujui</b>" in msg
+    assert "📅 Tanggal: Selasa, 03 November 2026" in msg
+    assert "💬 Catatan Mentor: <i>-</i>" in msg
     assert "Tindakan" not in msg  # baris lama memang dihapus
 
 
 def test_notif_revisi_ambil_catatan_mentor_dan_petunjuk():
     msg = absensi.status_change_message(NEEDS_REVISION, "2026-11-03", "Bagian jaringan belum rinci")
-    assert "Catatan mentor: <i>Bagian jaringan belum rinci</i>" in msg
-    assert "Perbaiki lalu kirim ulang di portal." in msg
+    assert "💬 Catatan Mentor: <i>Bagian jaringan belum rinci</i>" in msg
+    assert "👉 Perbaiki logbook lalu kirim ulang di portal." in msg
 
 
 def test_catatan_mentor_diescape():
@@ -81,7 +82,7 @@ async def test_alur_pengisian_mengirim_pesan_berjenjang(ctx):
 
     await poll_once(database, settings, user, daily(activity_log="Merakit PC"), tg)
     assert "Sebagian Terisi" in tg.messages[-1]
-    assert "Catatan mentor: <i>-</i>" in tg.messages[-1]
+    assert "💬 Catatan Mentor: <i>-</i>" in tg.messages[-1]
 
     # label tetap PARTIAL -> sengaja tidak pesan baru (anti spam)
     count = len(tg.messages)
@@ -106,4 +107,4 @@ async def test_pesan_revisi_membawa_catatan_mentor(ctx):
     await poll_once(database, settings, user, revision, tg)
 
     assert "Perlu Revisi" in tg.messages[-1]
-    assert "Catatan mentor: <i>Bagian jaringan belum rinci</i>" in tg.messages[-1]
+    assert "💬 Catatan Mentor: <i>Bagian jaringan belum rinci</i>" in tg.messages[-1]

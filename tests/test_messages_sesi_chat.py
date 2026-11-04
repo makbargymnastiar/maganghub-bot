@@ -114,8 +114,8 @@ async def test_panduan_lewat_dispatch_dan_muat_di_telegram(ctx):
 def test_pesan_token_kedaluwarsa_mengandung_langkah_dan_escaping():
     rendered = sesi.token_expired_message("token ditolak server (HTTP <401>)")
     assert "&lt;401&gt;" in rendered
-    assert "F12" in rendered and "Console" in rendered
-    assert "/token" in rendered
+    assert "TOKEN MONEV TIDAK BERLAKU" in rendered
+    assert "/token &lt;token&gt;" in rendered and "/cookie &lt;refresh_token&gt;" in rendered
 
 
 def test_help_text_akhir_zaman():

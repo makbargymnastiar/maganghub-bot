@@ -106,11 +106,32 @@ async def test_perubahan_status_hanya_mengirim_satu_pesan(ctx):
     assert result.changes == [("2026-11-03", "APPROVED")]
     assert len(tg.messages) == 1
     assert "Hadir Disetujui" in tg.messages[0]
-    assert "Catatan mentor: <i>-</i>" in tg.messages[0]
+    assert "Catatan Mentor: <i>-</i>" in tg.messages[0]
 
     # siklus berikutnya tanpa perubahan -> tidak ada pesan baru
     await run_poll(database, settings, user, FakeMonevClient(approved), now=TODAY, notify=tg)
     assert len(tg.messages) == 1
+
+
+async def test_ganti_hari_tidak_memicu_notif_belum_diisi(ctx):
+    """Record hari baru yang baru pertama muncul (EMPTY) bukan perubahan nyata —
+    dulu ini mengirim '⚪ Belum Diisi' jam 00:01 padahal kemarin sudah diisi."""
+    settings, database, user = ctx
+    tg = FakeTelegram()
+    # seed 23:59 tanggal 3 — tanpa data apa pun
+    await run_poll(
+        database, settings, user, FakeMonevClient(make_payloads()),
+        now=datetime.fromisoformat(f"2026-11-03T23:59:00{TZ}"), notify=tg,
+    )
+    assert tg.messages == []
+
+    # 00:01 tanggal 4: record hari baru pertama kali = EMPTY → harus diam
+    result = await run_poll(
+        database, settings, user, FakeMonevClient(make_payloads()),
+        now=datetime.fromisoformat(f"2026-11-04T00:01:00{TZ}"), notify=tg,
+    )
+    assert tg.messages == []
+    assert result.today_label.key == "EMPTY"
 
 
 async def test_restart_tidak_mengulang_notifikasi(ctx):
