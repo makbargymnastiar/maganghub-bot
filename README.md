@@ -1,14 +1,18 @@
 # Bot Pengingat Absensi Maganghub (monev)
 
-Bot Telegram pribadi yang memantau portal monev Maganghub atas nama Anda dan
-mengirim pesan ketika:
+Bot Telegram yang memantau portal monev Maganghub atas nama setiap pengguna
+terdaftar dan mengirim pesan ketika:
 
 - status absensi/uraian harian berubah (mis. di-ACC mentor, diminta revisi, ditolak),
 - laporan hari ini belum diisi menjelang malam,
 - token sesi monev mendekati kedaluwarsa atau mulai ditolak server,
+- hasil evaluasi bulanan mentor keluar ("Belum Diisi" → "Sudah Diisi Mentor"),
 - ada pengumuman/warning dari portal.
 
 Bot **hanya membaca** API monev — ia tidak pernah mengisi atau mengirim laporan.
+
+Multi-user: setiap orang bisa daftar sendiri — cukup tempel token sesinya di chat
+bot, `participant_id` dibaca otomatis dari portal (lihat [Multi-user](#multi-user)).
 
 ---
 
@@ -20,30 +24,35 @@ bot/
   settings.py         baca config.py (rahasia), normalisasi, masking token
   db.py               skema SQLite (users, day_state, notify_flags, event_log, settings)
   store.py            seluruh query; satu-satunya modul yang menyentuh SQL
-  models.py           User, DayRecord
+  models.py           User, DayRecord, EvalItem/EvaluationResult (bintang + predikat)
   monev/
     status.py         PETA STATUS — port fungsi i(e, t, r) dari frontend monev
     client.py         httpx + retry + pemisahan TokenRejected (401/403) vs error lain
-    endpoints.py      home, attendances, daily-logs, absence-warnings, announcements, system/time, users/me
+    endpoints.py      home, attendances, daily-logs, absence-warnings, announcements, system/time, users/me, monthly-reports
+    evaluation.py     Pembaca laporan bulanan + capaian kurikulum (8 aspek + normalisasi nilai)
+    frontend_paths.py Gali nama endpoint dari teks bundle SPA — tanpa menjalankan browser
     b64.py            dekode response base64 (announcements)
     jwt_utils.py      baca klaim ttl/fingerprint (token monev tidak punya `exp`)
   messages/           SEMUA kalimat pesan, dipecah per topik (tanpa logika)
     base.py           esc(), pretty_date(), short_date() (hari/bulan bahasa Indonesia)
     absensi.py        notif perubahan status + catatan mentor + pengumuman/warning
     pengisian.py      pengingat berjenjang (soft/rawan/dekat/mepet) + cek sore + terlewat
-    harian.py        paket pagi: libur hari ini, evaluasi H-7, pengajuan uang saku
+    harian.py        paket pagi: libur hari ini, pengingat evaluasi H-7..H-1, hari-H (tgl 9)
+    evaluasi.py       kartu hasil evaluasi + kalimat motivasi dinamis
     tagihan.py        tagihan absensi belum di-ACC ≥5 hari
     sesi.py           token/cookie: panduan, kedaluwarsa, tersimpan, ditolak
     chat.py           /help, /start, /status, /cek, dan balasan perintah lain
   jobs/
     poll.py           gabung 3 endpoint, deteksi perubahan, kirim notifikasi
     reminders.py      JADWAL TERKUNCI: 16:55 + berjenjang 18:00–23:59 + paket pagi 08:00
+    evaluations.py    pemantau hasil evaluasi bulanan (cek 30 menit, dedup per periode)
     token_health.py   peringatan H-30 menit, deteksi 401, auto-refresh via cookie
     announcements.py  pengumuman + warning keterlambatan dari portal
   telegram/
     api.py            wrapper Bot API (getUpdates/sendMessage), tanpa library eksternal
     commands.py       dispatch perintah + BotContext (kalimat diambil dari bot/messages/)
 scripts/probe_api.py  alat live: panggil API, cetak status hasil pemetaan
+scripts/discover_endpoints.py  gali + verifikasi nama endpoint dari bundle SPA monev
 tools/bookmarklet.md  panduan langkah-demi-langkah mengambil & mengisi token
 ```
 
@@ -105,12 +114,73 @@ dan `tagihan.py`.
 | 23:30–23:45 | Mendekati tenggat | tiap 5 menit |
 | 23:46–23:59 | Menit-menit terakhir | tiap 3 menit |
 | 00:01–06:00 | Laporan kemarin terlewat | 1x |
-| 08:00–11:59 | Paket pagi: info libur, tagihan ACC ≥5 hari, evaluasi H-7 (tgl 2–8), uang saku (tgl 9) | 1x per item |
+| 08:00–11:59 | Paket pagi: info libur, tagihan ACC ≥5 hari, pengingat evaluasi H-7..H-1 (tgl 2–8), hari-H evaluasi + pengajuan uang saku (tgl 9) | 1x per item |
 
 Tier malam hanya jalan selama status masih layak ditagih (`EMPTY`/`ATTENDED_NO_LOG`/`PARTIAL`).
 Ketelitian menit diambil dari selisih waktu `set_at` flag per tier, bukan dari jumlah
 thread; tiap "sekali sehari" dijamin flag unik di `notify_flags` sehingga restart di
 tengah hari tidak mengulang pesan yang sudah terkirim.
+
+## Evaluasi bulanan
+
+Mentor mengisi evaluasi sikap setiap bulan, dan isinya biasanya baru masuk pada
+tanggal 9 bulan berikutnya. Karena itu job evaluasi (tiap 30 menit, terpisah dari
+polling absensi) menanyakan **dua periode sekaligus**: bulan berjalan + bulan
+sebelumnya. Begitu status berubah menjadi "diisi mentor", satu kartu dikirim dan
+flag `eval:<YYYY-MM>:filled` menjamin kartu yang sama tidak pernah datang dua kali
+— termasuk setelah restart service, dan termasuk kalau mentor mengedit nilainya
+belakangan.
+
+Isi kartu: 8 poin penilaian sikap (kehadiran & disiplin, sikap & perilaku,
+komunikasi, inisiatif & tanggung jawab, adaptasi, pengetahuan teknis,
+produktivitas & ketepatan waktu, kerja sama tim), capaian kurikulum, komentar
+mentor, dan satu kalimat motivasi yang dipilih dari distribusi nilai:
+
+| Kondisi nilai | Nada kalimat |
+| --- | --- |
+| Semua ⭐⭐⭐⭐⭐ | Puji konsistensi + dorong ambil tanggung jawab/tantangan berikutnya |
+| Dominan ⭐⭐⭐⭐–⭐⭐⭐⭐⭐ | Apresiasi performa solid + asah detail kecil (dokumentasi, inisiatif melapor) |
+| Ada ⭐⭐⭐/⭐⭐ atau ada catatan spesifik | Apresiasi poin yang kuat, rangkul masukan mentor sebagai bahan belajar — tidak menghakimi |
+
+Pemetaan nilainya: Sangat Baik (SB) ⭐⭐⭐⭐⭐, Baik (B) ⭐⭐⭐⭐, Cukup (C) ⭐⭐⭐,
+Kurang (K) ⭐⭐. Kalimat motivasinya deterministik per periode, jadi notifikasi yang
+dibaca ulang tidak berubah-ubah.
+
+Aturan utamanya: **tidak ada angka karangan**. Nilai yang tidak terbaca ditampilkan
+apa adanya ("—"), bagian yang tidak dikirim portal dilewati, dan kalau mentor belum
+mengisi, `/evaluasi` menjawab "belum diisi" — bukan kartu kosong.
+
+Jebakan yang sudah dinetralkan: angka yang dikirim portal adalah **peringkat 1..4**
+(1 = terbaik), bukan jumlah bintang. `1` jadi ⭐⭐⭐⭐⭐, `4` jadi ⭐⭐. Kode
+`evaluation.grade_rank_of()` satu-satunya tempat pembacaan nilai, jadi aturan itu
+tidak bisa terlupakan di pemanggilnya.
+
+### Dari mana nama endpoint evaluasi diketahui
+
+Tidak ada dokumen publik untuk API monev, dan fitur lain di proyek ini dikunci dari
+HAR browser. Untuk evaluasi, namanya digali dari **bundle JS SPA yang memang
+merupakan aset statis publik** — halaman `monev.maganghub.kemnaker.go.id` dibaca,
+semua `<script>` dan chunk-nya disapu, lalu pemanggilan API-nya dibaca langsung dari
+kodenya:
+
+```bash
+python scripts/discover_endpoints.py                    # gali: apiBase + semua path API
+python scripts/discover_endpoints.py --grep "evalua|grade|monthly"   # baca cuplikan kodenya
+python scripts/discover_endpoints.py --sweep            # verifikasi path dengan token aktif
+```
+
+Hasilnya: evaluasi bulanan adalah **laporan bulanan** (`/api/v1/monthly-reports`,
+ditanya dengan `participant_id` + `start_date`/`end_date`), materi kurikulum lewat
+`/api/v1/participants/{id}/periods/{start_date}/curriculum`, dan field nilainya
+bernama `*_grade` (portal boleh membalas dengan alias `*_score`) plus
+`mentor_feedback`. Tidak ada satu pun path yang mengandung kata "evaluation" —
+semua tebakan sebelumnya ternyata salah.
+
+Untuk melihat raw response aslinya di server (memastikan bentuknya masih sama):
+
+```bash
+python scripts/probe_api.py --evaluations
+```
 
 ## Mengisi token lewat Telegram
 
@@ -183,9 +253,10 @@ chmod 600 config.py
 | Key | Default | Keterangan |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | — | dari @BotFather |
-| `TELEGRAM_CHAT_ID` | — | chat yang dilayani (single-user) |
+| `TELEGRAM_CHAT_ID` | — | chat owner: seed awal + laporan aktivitas pendaftaran |
 | `MONEV_API_URL` | `https://monev-api.maganghub.kemnaker.go.id/api/v1/daily-logs` | boleh URL endpoint; base URL diturunkan otomatis |
-| `PARTICIPANT_ID` | — | UUID peserta magang |
+| `PARTICIPANT_ID` | — | UUID peserta owner; kosong = tidak ada seed, hanya pendaftar mandiri |
+| `INVITE_CODE` | kosong | **opsional** — kosong = pendaftaran terbuka (siapa pun bisa daftar sendiri); terisi = pendaftar wajib membawa kode |
 | `BEARER_TOKEN` | — | token awal; setelah itu cukup lewat `/token` di chat |
 | `MONEV_REFRESH_TOKEN` | kosong | cookie `monev_refresh_token`; setelah itu cukup lewat `/cookie` |
 | `MONEV_WEB_URL` | `https://monev.maganghub.kemnaker.go.id` | origin SPA untuk `version.json` (header build id) |
@@ -193,6 +264,7 @@ chmod 600 config.py
 | `TZ_NAME` | `Asia/Jakarta` | zona waktu untuk pengingat & "hari ini" |
 | `POLL_MINUTES` | `15` | minimum 5; bisa diubah runtime lewat `/interval` |
 | `DB_PATH` | `data/bot.db` | SQLite |
+| `MAX_USERS` | `10` | plafon jumlah akun yang dipantau satu bot (penjaga spam saat pendaftaran terbuka) |
 | `LOG_LEVEL` | `INFO` | |
 
 > Jadwal pengingat harian **sengaja tidak dibuat configurable** — terkunci di
@@ -223,12 +295,16 @@ sudo journalctl -fu monev-bot
 
 | Perintah | Fungsi |
 | --- | --- |
+| `/start` | sambutan & cara mulai (untuk yang baru pertama chat) |
 | `/status` | status hari ini + riwayat 7 hari |
 | `/cek` | paksa polling sekarang, laporkan perubahan |
+| `/evaluasi [YYYY-MM]` | hasil evaluasi bulan ini (atau bulan yang diminta) on-demand |
 | `/token <Bearer …>` | ganti token sesi (divalidasi dulu ke API) |
 | `/tokeninfo` | token aktif?, sisa umur, fingerprint sesi |
-| `/interval <menit>` | ubah frekuensi polling (min 5, tersimpan di DB) |
+| `/interval <menit>` | ubah frekuensi polling (min 5, tersimpan di DB, berlaku untuk semua pengguna) |
 | `/log [n]` | n event terakhir |
+| `/daftar [kode] <participant_id>` | daftar sebagai pengguna baru (kode hanya kalau `INVITE_CODE` diisi) |
+| `/stop` · `/lanjut` | hentikan / lanjutkan pemantauan akun Anda (data tidak dihapus) |
 | `/help` | daftar perintah |
 
 Token juga diterima tanpa perintah: cukup tempel string `eyJ0eXAi…`.
@@ -247,18 +323,54 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 89 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, kalimat pesan, b64/JWT/settings
+python -m pytest -q                # 149 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, registrasi multi-user, laporan evaluasi + kartu hasil, penggalian nama endpoint, kalimat pesan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
+python scripts/probe_api.py --evaluations        # raw JSON laporan bulanan + hasil parser
+python scripts/discover_endpoints.py             # gali nama endpoint baru dari bundle SPA
 ```
 
 `probe_api.py` tidak menyentuh Telegram dan tidak menulis DB. Nilai enum yang
 ditampilkan di bagian akhir probe adalah bahan untuk mengoreksi `bot/status.py`
 bila portal melepas status baru.
 
+## Multi-user
+
+Satu bot, satu proses, satu SQLite — tiap orang yang chat bot punya baris sendiri
+di tabel `users` (dibedakan oleh Telegram chat ID) beserta token, cookie refresh,
+dan status hariannya sendiri.
+
+Cara teman Anda bergabung — **tanpa Anda perlu menyentuh config/restart**:
+
+1. Dia chat bot dan **tempel token sesi monev** (atau `/cookie <monev_refresh_token>`).
+   Baris user-nya dibuat otomatis saat itu juga.
+2. Bot membaca `participant_id` miliknya sendiri dari endpoint "me" portal
+   (`/users/me`, `/users/me/home`, `/participant-absence-warnings/me`) lalu langsung
+   berstatus **`active`** — polling dan seluruh jadwal pengingat jalan untuk akunnya.
+   ID yang salah tidak mungkin terpasang, karena datanya diambil dari token miliknya.
+3. Alternatif manual, kalau portal tidak menyebutkan ID: `/daftar <participant_id>`
+   (status `pending` sampai token masuk), atau `/daftar <kode> <participant_id>` jika
+   `INVITE_CODE` diisi. Saat token itu dikirim, bot mencocokkan klaim dengan profil
+   akun milik token (`/api/v1/users/me` + klaim `user` di JWT) — cocok → `active`,
+   tidak cocok → tetap `pending` dan yang bersangkutan disuruh mengulang.
+4. Anda dapat notifikasi "Pengguna baru" di chat owner beserta chat ID-nya, dan
+   pendaftaran berhenti otomatis kalau jumlah user menyentuh `MAX_USERS`.
+
+Chat baru yang menekan `/start` (atau `/help`, `/panduan`) mendapat **sambutan**
+`chat.welcome_message()` — isi bot, fitur, dan langkah awal — tanpa dibuatkan baris
+user dan tanpa laporan apa pun ke owner. Baru setelah dia mengirim perintah yang
+menyentuh data tanpa mendaftar, owner dapat laporan "chat asing".
+
+Yang dijamin: balasan perintah selalu memakai chat ID pengirim, jadi tidak ada
+user yang melihat data user lain; `config.py` hanya jadi seed untuk owner. Satu
+`/interval` berlaku global (scheduler tunggal). Pesan dari grup/channel diabaikan.
+
+Pengguna nonaktif sementara: `/stop` (keluar dari scheduler, data tetap ada),
+dihidupkan lagi dengan `/lanjut`. Menghapus orang permanen saat ini lewat SQL:
+`DELETE FROM users WHERE tg_chat_id='…'`.
+
 ## Batasan yang disengaja
 
-- **Single-user.** Chat selain `TELEGRAM_CHAT_ID` ditolak (dan Anda diberi tahu ada pesan asing).
-  Tabel `users` sudah ber-`user_id` di semua relasi, jadi perluasan multi-user tidak butuh migrasi.
 - Tidak ada webhook/port inbound — cuma long polling, jadi server tanpa domain/HTTPS pun aman.
 - Bot tidak mengisi laporan; menulis ke portal sengaja tidak diimplementasikan.
+- Jadwal pengingat sama untuk semua pengguna (terkunci di `bot/jobs/reminders.py`).

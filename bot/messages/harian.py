@@ -1,5 +1,5 @@
 """Pengingat pagi 08:00 yang tidak terkait kelengkapan isian: hari libur,
-evaluasi magang H-7, dan pengajuan uang saku tanggal 9."""
+evaluasi magang H-7..hari-H, dan pengajuan uang saku tanggal 9."""
 
 from __future__ import annotations
 
@@ -23,12 +23,22 @@ def day_off_message(log_date: str, from_portal: bool = False) -> str:
 
 
 def eval_reminder_message(days_left: int) -> str:
-    """Tanggal 2–8: mengingatkan evaluasi mentor menjelang pengajuan tanggal 9."""
+    """(A) Tanggal 2–8: pengingat H-7..H-1 evaluasi bulanan mentor."""
     return (
-        f"📊 <b>EVALUASI MAGANG — H-{days_left} (TANGGAL 9)</b>\n\n"
-        "Mentor harus mengisi evaluasi magang sebelum periode pengajuan "
-        "uang saku (Tanggal 9).\n"
-        "Ingatkan mentor hari ini kalau evaluasinya belum terisi."
+        f"📊 <b>PENGINGAT EVALUASI MENTOR (H-{days_left})</b>\n\n"
+        "📅 Tanggal 9 Semakin Dekat\n"
+        "⚠️ Evaluasi bulanan wajib terisi oleh mentor.\n\n"
+        "💡 Ingatkan mentor kamu secara santun hari ini jika belum diisi ya!"
+    )
+
+
+def eval_due_message() -> str:
+    """(B) Tanggal 9 pagi: hari-H batas akhir pengisian evaluasi oleh mentor."""
+    return (
+        "📊 <b>HARI-H EVALUASI MENTOR (TANGGAL 9)</b>\n\n"
+        "📅 Hari Ini Tanggal 9 (Batas Akhir)!\n"
+        "🚨 Hari terakhir pengisian evaluasi bulanan oleh mentor.\n\n"
+        "👉 Segera cek portal &amp; pastikan mentor kamu sudah mengisinya hari ini!"
     )
 
 

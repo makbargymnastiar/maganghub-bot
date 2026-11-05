@@ -19,8 +19,17 @@ def test_libur_dari_portal():
 
 def test_eval_hitung_mundur():
     msg = harian.eval_reminder_message(4)
-    assert "📊" in msg and "EVALUASI MAGANG — H-4 (TANGGAL 9)" in msg
-    assert "evaluasi magang" in msg
+    assert "📊" in msg and "PENGINGAT EVALUASI MENTOR (H-4)" in msg
+    assert "Tanggal 9 Semakin Dekat" in msg
+    assert "Evaluasi bulanan wajib terisi oleh mentor" in msg
+    assert "secara santun" in msg
+
+
+def test_eval_hari_h():
+    msg = harian.eval_due_message()
+    assert "HARI-H EVALUASI MENTOR (TANGGAL 9)" in msg
+    assert "Hari Ini Tanggal 9 (Batas Akhir)" in msg
+    assert "terakhir pengisian evaluasi bulanan" in msg
 
 
 def test_uang_saku():

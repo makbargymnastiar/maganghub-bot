@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
     refresh_saved_at  TEXT NOT NULL DEFAULT '',
     active            INTEGER NOT NULL DEFAULT 1,
     reminders_on      INTEGER NOT NULL DEFAULT 1,
+    status            TEXT NOT NULL DEFAULT 'pending',
     created_at        TEXT NOT NULL
 );
 
@@ -75,6 +76,8 @@ CREATE TABLE IF NOT EXISTS settings (
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("users", "refresh_cookie", "TEXT NOT NULL DEFAULT ''"),
     ("users", "refresh_saved_at", "TEXT NOT NULL DEFAULT ''"),
+    # Multi-user: status registrasi per pengguna ('pending' | 'active').
+    ("users", "status", "TEXT NOT NULL DEFAULT 'pending'"),
 ]
 
 

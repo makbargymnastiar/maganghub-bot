@@ -66,6 +66,8 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     base_url: str
+    # Seed awal untuk owner saja; multi-user mengambil participant_id dari
+    # perintah /daftar, sehingga boleh kosong.
     participant_id: str
     bearer_token: str
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Asia/Jakarta"))
@@ -83,6 +85,17 @@ class Settings:
     refresh_cookie: str = ""
     # Selang waktu bot mencoba refresh sebelum token akses benar-benar mati.
     token_refresh_lead_minutes: int = 90
+    # Kode undangan opsional. Kosong = pendaftaran terbuka siapa pun bisa /daftar
+    # sendiri (dibatasi MAX_USERS di bawah). Terisi = kode wajib, dan bot
+    # praktiknya kembali jadi khusus orang yang Anda beri kode.
+    invite_code: str = ""
+    # Plafon jumlah baris user, penjaga spam kalau pendaftaran sedang terbuka.
+    max_users: int = 10
+
+    @property
+    def registration_open(self) -> bool:
+        """Boleh daftar mandiri tanpa kode undangan."""
+        return not (self.invite_code or "").strip()
 
     def now(self):
         from datetime import datetime
@@ -120,6 +133,8 @@ def load_settings(raw: dict[str, object] | None = None) -> Settings:
         web_url=(get("MONEV_WEB_URL", DEFAULT_WEB_URL) or "").rstrip("/"),
         refresh_cookie=normalize_cookie(get("MONEV_REFRESH_TOKEN", "")),
         token_refresh_lead_minutes=max(5, int(get("TOKEN_REFRESH_LEAD_MINUTES", 90))),
+        invite_code=str(get("INVITE_CODE", "")),
+        max_users=max(1, int(get("MAX_USERS", 10))),
     )
 
 

@@ -237,7 +237,7 @@ async def test_eval_h_minus_dan_uang_saku(tmp_path):
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-05"))
         assert "eval_reminder" in sent
-        assert "H-4" in next(t for _, t in tg.messages if "EVALUASI MAGANG" in t)
+        assert "H-4" in next(t for _, t in tg.messages if "PENGINGAT EVALUASI MENTOR" in t)
     finally:
         await db.close()
 
@@ -245,7 +245,10 @@ async def test_eval_h_minus_dan_uang_saku(tmp_path):
     tg = Notify()
     try:
         sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-09"))
-        assert "stipend" in sent
+        # tanggal 9 mengirim dua hal berbeda: batas akhir evaluasi mentor DAN
+        # pengajuan uang saku — keduanya wajib ada, tidak boleh saling menimpa
+        assert "eval_due" in sent and "stipend" in sent
+        assert "HARI-H EVALUASI MENTOR" in next(t for _, t in tg.messages if "EVALUASI MENTOR" in t)
         assert "PENGAJUAN UANG SAKU" in next(t for _, t in tg.messages if "UANG SAKU" in t)
     finally:
         await db.close()

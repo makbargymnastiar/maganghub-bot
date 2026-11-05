@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from .models import User
+from .models import STATUS_ACTIVE, STATUS_PENDING, User
 from .settings import Settings
 
 KIND_STATUS = "status"
@@ -37,26 +37,39 @@ def _row_to_user(row: aiosqlite.Row) -> User:
         reminders_on=bool(row["reminders_on"]),
         refresh_cookie=(row["refresh_cookie"] if "refresh_cookie" in row.keys() else "") or "",
         refresh_saved_at=datetime.fromisoformat(refresh_at) if refresh_at else None,
+        status=(row["status"] if "status" in row.keys() else STATUS_ACTIVE) or STATUS_ACTIVE,
     )
 
 
 async def ensure_user(db: aiosqlite.Connection, settings: Settings, name: str = "") -> User:
-    """Seed satu baris user dari `config.py`; token lama di DB tidak ditimpa."""
+    """Seed satu baris user dari `config.py`; token lama di DB tidak ditimpa.
+
+    User dari config dianggap terpercaya (owner) sehingga langsung berstatus
+    `active` — tetapi hanya kalau participant_id-nya memang diisi.
+    """
     now = _iso(settings.now())
+    seed_status = STATUS_ACTIVE if settings.participant_id else STATUS_PENDING
     await db.execute(
-        """INSERT INTO users (tg_chat_id, participant_id, name, bearer_token, refresh_cookie, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO users (tg_chat_id, participant_id, name, bearer_token, refresh_cookie, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(tg_chat_id) DO UPDATE SET
-               participant_id = excluded.participant_id,
+               participant_id = CASE WHEN users.participant_id = '' THEN excluded.participant_id
+                                     ELSE users.participant_id END,
                refresh_cookie = CASE WHEN users.refresh_cookie = '' THEN excluded.refresh_cookie
-                                     ELSE users.refresh_cookie END""",
+                                     ELSE users.refresh_cookie END,
+               bearer_token = CASE WHEN users.bearer_token = '' THEN excluded.bearer_token
+                                   ELSE users.bearer_token END,
+               status = CASE WHEN users.participant_id = '' AND excluded.participant_id != ''
+                             THEN ? ELSE users.status END""",
         (
             settings.telegram_chat_id,
             settings.participant_id,
             name,
             settings.bearer_token,
             settings.refresh_cookie,
+            seed_status,
             now,
+            seed_status,
         ),
     )
     if name:
@@ -64,10 +77,68 @@ async def ensure_user(db: aiosqlite.Connection, settings: Settings, name: str = 
             "UPDATE users SET name = ? WHERE tg_chat_id = ? AND name = ''",
             (name, settings.telegram_chat_id),
         )
+    # DB dari versi single-user belum punya kolom `status`; owner wajib aktif
+    # supaya upgrade tidak menuntut langkah manual.
+    if settings.participant_id:
+        await db.execute(
+            "UPDATE users SET status = ? WHERE tg_chat_id = ? AND status != ?",
+            (STATUS_ACTIVE, settings.telegram_chat_id, STATUS_ACTIVE),
+        )
     await db.commit()
     user = await get_user(db, settings.telegram_chat_id)
     assert user is not None
     return user
+
+
+async def register_user(
+    db: aiosqlite.Connection, chat_id: str, name: str = "", *, now: datetime | None = None
+) -> User:
+    """Daftarkan chat baru sebagai user `pending` (idempoten; tidak menimpa data)."""
+    chat_id = str(chat_id)
+    exists = await get_user(db, chat_id)
+    if exists is not None:
+        if name and not exists.name:
+            await db.execute("UPDATE users SET name = ? WHERE tg_chat_id = ?", (name, chat_id))
+            await db.commit()
+            return await get_user(db, chat_id) or exists
+        return exists
+    await db.execute(
+        """INSERT INTO users (tg_chat_id, participant_id, name, status, created_at)
+           VALUES (?, '', ?, ?, ?)""",
+        (chat_id, name, STATUS_PENDING, _iso(now or datetime.now())),
+    )
+    await db.commit()
+    user = await get_user(db, chat_id)
+    assert user is not None
+    return user
+
+
+async def set_participant_id(db: aiosqlite.Connection, chat_id: str, participant_id: str) -> None:
+    await db.execute(
+        "UPDATE users SET participant_id = ? WHERE tg_chat_id = ?",
+        (participant_id.strip(), str(chat_id)),
+    )
+    await db.commit()
+
+
+async def activate_user(db: aiosqlite.Connection, chat_id: str) -> None:
+    await db.execute(
+        "UPDATE users SET status = ? WHERE tg_chat_id = ?", (STATUS_ACTIVE, str(chat_id))
+    )
+    await db.commit()
+
+
+async def deactivate_user(db: aiosqlite.Connection, chat_id: str) -> None:
+    """Nonaktifkan tanpa hapus data — berhenti poll/reminder, bisa diaktif lagi."""
+    await db.execute("UPDATE users SET active = 0 WHERE tg_chat_id = ?", (str(chat_id),))
+    await db.commit()
+
+
+async def count_users(db: aiosqlite.Connection) -> int:
+    """Semua baris user (aktif + pending) — pembanding MAX_USERS."""
+    async with db.execute("SELECT COUNT(*) AS n FROM users") as cur:
+        row = await cur.fetchone()
+    return int(row["n"]) if row else 0
 
 
 async def get_user(db: aiosqlite.Connection, chat_id: str) -> User | None:
@@ -77,10 +148,13 @@ async def get_user(db: aiosqlite.Connection, chat_id: str) -> User | None:
 
 
 async def list_users(db: aiosqlite.Connection, active_only: bool = True) -> list[User]:
+    """Semua user; `active_only` menyaring yang siap dipakai (terverifikasi + aktif)."""
     sql = "SELECT * FROM users"
+    params: tuple[str, ...] = ()
     if active_only:
-        sql += " WHERE active = 1"
-    async with db.execute(sql + " ORDER BY created_at") as cur:
+        sql += " WHERE active = 1 AND status = ?"
+        params = (STATUS_ACTIVE,)
+    async with db.execute(sql + " ORDER BY created_at", params) as cur:
         rows = await cur.fetchall()
     return [_row_to_user(r) for r in rows]
 

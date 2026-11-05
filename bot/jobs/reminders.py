@@ -252,7 +252,16 @@ async def run_morning(
             )
         )
 
-    # 5d) Hari-H pengajuan uang saku (tanggal 9).
+    # 5d) Hari-H evaluasi mentor (tanggal 9). Terpisah dari flag `stipend` karena
+    #     dua-duanya jatuh di tanggal yang sama tapi isinya berbeda.
+    if today.day == STIPEND_DAY and not await store.flag_exists(db, uid, today_iso, "eval_due"):
+        sent.append(
+            await _send(
+                db, uid, today_iso, "eval_due", harian.eval_due_message(), notify, now,
+            )
+        )
+
+    # 5e) Hari-H pengajuan uang saku (tanggal 9).
     if today.day == STIPEND_DAY and not await store.flag_exists(db, uid, today_iso, "stipend"):
         sent.append(
             await _send(

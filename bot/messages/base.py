@@ -58,6 +58,14 @@ def _parse(iso_date: str) -> datetime | None:
         return None
 
 
+def month_year_id(period: str) -> str:
+    """'2026-11' (atau tanggal ISO) -> 'November 2026' — untuk kartu evaluasi."""
+    dt = _parse(period if len(period) > 7 else f"{period}-01")
+    if dt is None:
+        return esc(period)
+    return f"{MONTHS_ID[dt.month - 1]} {dt.year}"
+
+
 def pretty_date(iso_date: str) -> str:
     """'2026-11-03' → 'Selasa, 03 November 2026' (nama hari/bulan Indonesia)."""
     dt = _parse(iso_date)

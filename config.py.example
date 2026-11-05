@@ -8,11 +8,24 @@ TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 # --- Maganghub monev ---
 # Boleh URL lengkap endpoint daily-logs; base URL diturunkan otomatis.
 MONEV_API_URL = "https://monev-api.maganghub.kemnaker.go.id/api/v1/daily-logs"
+# ID peserta owner. Isi = Anda ikut terdaftar otomatis saat bot start (tanpa perlu
+# daftar). Boleh dikosongkan; nanti cukup kirim /daftar atau token lewat chat.
 PARTICIPANT_ID = "YOUR_PARTICIPANT_ID"
 
+# --- Multi-user ---
+# Pendaftaran sudah OTOMATIS dan terbuka: teman Anda cukup chat bot, lalu menempel
+# token / mengirim `/daftar <participant_id>` — bot membaca participant_id dari
+# portal dan langsung memantaunya. Anda tidak perlu mengubah config atau restart.
+#
+# Isi INVITE_CODE hanya kalau Anda ingin menguncinya: dengan kode terisi, pendaftar
+# harus mengirim `/daftar <kode> <participant_id>`.
+INVITE_CODE = ""
+# Plafon jumlah akun yang dipantau satu bot (penjaga spam saat pendaftaran terbuka).
+MAX_USERS = 10
+
 # Token akses sesi monev. Umur efektif +/- 6 jam dan sesi lama dibatalkan saat Anda
-# login lagi. Ini HANYA seed awal — kalau MONEV_REFRESH_TOKEN di bawah terisi, bot
-# memperbarui token sendiri dan Anda tidak perlu mengirim apa-apa lagi.
+# login lagi. Ini HANYA seed awal untuk owner — kalau MONEV_REFRESH_TOKEN di bawah
+# terisi, bot memperbarui token sendiri dan Anda tidak perlu mengirim apa-apa lagi.
 # Cara paling nyaman: kirim lewat chat Telegram, /token <bearer>
 BEARER_TOKEN = "Bearer YOUR_BEARER_TOKEN"
 

@@ -1,17 +1,25 @@
 """Endpoint monev: bentuk query + pemetaan response, sesuai yang dipakai frontend.
 
-Semua bentuk response dikunci dari HAR:
+Semua bentuk response dikunci dari data nyata (HAR atau hasil sapuan bundle SPA —
+lihat `scripts/discover_endpoints.py`):
 - daily-logs -> `{data: [...], page, page_size, total}` (query `date=<YYYY-MM-01>&limit=100`)
 - attendances -> array langsung di root
 - home / absence-warnings -> `{data: {...}}`
 - announcements -> teks base64 dari JSON (lihat `b64.py`)
+- monthly-reports -> daftar laporan bulanan (query `participant_id&start_date&end_date`)
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 from .client import MonevClient, MonevError
+from . import evaluation
+from ..models import EvaluationResult
+
+log = logging.getLogger("bot.monev.endpoints")
 
 HOME_PATH = "/api/v1/users/me/home"
 ATTENDANCES_PATH = "/api/v1/attendances"
@@ -123,3 +131,107 @@ async def fetch_announcements(client: MonevClient) -> list[dict[str, Any]]:
     raw = await client.get(ANNOUNCEMENTS_PATH)
     decoded = maybe_b64_json(raw)
     return _as_list(decoded)
+
+
+# Evaluasi bulanan = "laporan bulanan" di portal. Nama path, query, dan field-nya
+# tidak ditebak: semuanya hasil sapuan bundle SPA monev (lihat
+# `scripts/discover_endpoints.py`), tempat frontend memanggil
+# `e(`/monthly-reports`, {participant_id, start_date, end_date})`.
+MONTHLY_REPORTS_PATH = "/api/v1/monthly-reports"
+MONTHLY_REPORTS_BY_PERIOD_PATH = "/api/v1/monthly-reports/participants-period"
+MONTHLY_REPORTS_LATEST_PATH = "/api/v1/monthly-reports/latest"
+PERIOD_CURRICULUM_PATH_FMT = "/api/v1/participants/{participant_id}/periods/{start_date}/curriculum"
+# Batas halaman: laporan bulanan cuma 1 per bulan, jendela query sebulan penuh.
+REPORTS_LIMIT = 100
+
+
+async def _fetch_reports(client: MonevClient, participant_id: str, start: str, end: str) -> Any:
+    """Daftar laporan bulanan peserta pada satu jendela tanggal.
+
+    Path utama dipakai frontend untuk daftar per peserta; `participants-period`
+    dipakai halaman yang mengelompokkan laporan per periode. Yang kedua cuma dicoba
+    kalau yang pertama benar-benar menolak (404/403), bukan kalau jawabannya kosong.
+    """
+    params = {"participant_id": participant_id, "limit": REPORTS_LIMIT}
+    if start:
+        params["start_date"], params["end_date"] = start, end
+    try:
+        return await client.get(MONTHLY_REPORTS_PATH, params)
+    except MonevError as exc:
+        log.debug("%s gagal (%s); coba %s", MONTHLY_REPORTS_PATH, exc, MONTHLY_REPORTS_BY_PERIOD_PATH)
+    return await client.get(MONTHLY_REPORTS_BY_PERIOD_PATH, params)
+
+
+async def fetch_period_curriculum(client: MonevClient, participant_id: str, start_date: str) -> Any:
+    """Materi kurikulum satu periode; None kalau endpoint-nya tidak menjawab.
+
+    Ini pelengkap saja — daftar materi tidak menghambat kartu hasil, jadi gagal
+    diambil biasa saja daripada memaksa satu siklus evaluasi jadi error.
+    """
+    if not participant_id or not start_date:
+        return None
+    path = PERIOD_CURRICULUM_PATH_FMT.format(participant_id=participant_id, start_date=start_date)
+    try:
+        return await client.get(path)
+    except MonevError as exc:
+        log.debug("kurikulum periode %s gagal: %s", start_date, exc)
+        return None
+
+
+async def fetch_evaluation(client: MonevClient, participant_id: str, period: str) -> EvaluationResult:
+    """Hasil evaluasi satu periode ('YYYY-MM'); kosong kalau mentor belum mengisi.
+
+    `MonevError` dibiarkan naik ke pemanggil (token mati / server bermasalah), tapi
+    laporan yang memang belum ada bukan error: `EvaluationResult` tanpa isi.
+    """
+    start, end = evaluation.period_window(period)
+    payload = await _fetch_reports(client, participant_id, start, end)
+    curriculum = await fetch_period_curriculum(client, participant_id, start)
+    return evaluation.parse_evaluation(payload, period, curriculum)
+
+
+# Nama kunci yang isinya ID peserta. Sengaja hanya yang mengandung "participant":
+# klaim `id` milik profil bisa jadi ID user Kemnaker, bukan ID peserta.
+_PARTICIPANT_KEYS = {"participantid", "participant", "idparticipant"}
+
+
+def walk_participant_ids(node: Any) -> list[str]:
+    if isinstance(node, dict):
+        found: list[str] = []
+        for key, value in node.items():
+            if isinstance(key, str) and key.lower().replace("_", "") in _PARTICIPANT_KEYS:
+                if isinstance(value, (str, int)) and str(value).strip():
+                    found.append(str(value).strip())
+            found.extend(walk_participant_ids(value))
+        return found
+    if isinstance(node, list):
+        nested: list[str] = []
+        for item in node:
+            nested.extend(walk_participant_ids(item))
+        return nested
+    if isinstance(node, str) and node.strip().startswith(("{", "[")):
+        try:
+            return walk_participant_ids(json.loads(node))
+        except ValueError:
+            return []
+    return []
+
+
+async def discover_participant_id(client: MonevClient) -> str:
+    """Cari ID peserta milik pemanggil token — supaya user tidak perlu mengetiknya.
+
+    Bentuk `/users/me` tidak dijamin, jadi endpoint milik sendiri ("me") dicoba
+    berurutan dan semua simpul JSON-nya disapu; yang menolak/gagal dilewati saja.
+    Endpoint daftar (mis. `/attendances`) sengaja tidak dipakai — di sana bisa ada
+    participant_id orang lain dan ID yang salah jauh lebih berbahaya daripada kosong.
+    Return string kosong bila memang tidak ketemu (user diminta kirim /daftar).
+    """
+    for path in (USER_PROFILE_PATH, HOME_PATH, ABSENCE_WARNINGS_PATH):
+        try:
+            payload = await client.get(path)
+        except MonevError:
+            continue
+        candidates = walk_participant_ids(payload)
+        if candidates:
+            return candidates[0]
+    return ""

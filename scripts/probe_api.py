@@ -7,6 +7,7 @@ Pemakaian:
     python scripts/probe_api.py                     # pakai token dari config.py / DB
     python scripts/probe_api.py --token "Bearer …"  # pakai token tertentu
     python scripts/probe_api.py --days 14           # jendela tanggal yang diperiksa
+    python scripts/probe_api.py --evaluations       # cetak raw JSON laporan bulanan + hasil parser
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bot import db as dbmod
 from bot import store
 from bot.jobs.poll import build_records, months_for_window
-from bot.monev import endpoints
+from bot.monev import endpoints, evaluation
 from bot.monev.client import MonevClient, MonevError, TokenRejected
 from bot.monev.status import pending_detail, resolve, unknown_detail
 from bot.models import LOG_FIELDS
@@ -31,7 +32,57 @@ from bot.settings import load_settings, mask_token
 from run import force_utf8_console
 
 
-async def main(token: str | None, days: int, use_db: bool) -> int:
+async def probe_evaluations(client: MonevClient, participant_id: str, period: str) -> int:
+    """Cetak raw JSON laporan bulanan + hasil parser bot untuk satu periode.
+
+    Nama endpoint-nya sudah ditemukan dari bundle SPA, jadi alat ini bukan lagi
+    pencari path: gunanya untuk memastikan bentuk response asli masih sama dengan
+    yang diasumsikan `bot/monev/evaluation.py`, atau membaca sendiri isi laporan
+    bulan tertentu.
+    """
+    start, end = evaluation.period_window(period)
+    window = {
+        "participant_id": participant_id,
+        "start_date": start,
+        "end_date": end,
+        "limit": endpoints.REPORTS_LIMIT,
+    }
+    targets = (
+        (endpoints.MONTHLY_REPORTS_PATH, window),
+        (endpoints.MONTHLY_REPORTS_BY_PERIOD_PATH, window),
+        (endpoints.MONTHLY_REPORTS_LATEST_PATH, {"participant_id": participant_id}),
+        (
+            endpoints.PERIOD_CURRICULUM_PATH_FMT.format(participant_id=participant_id, start_date=start),
+            None,
+        ),
+    )
+    print(f"\n== endpoint evaluasi (periode {period}: {start} s/d {end}) ==")
+    hit = 0
+    for path, query in targets:
+        try:
+            payload = await client.get(path, query)
+        except MonevError as exc:
+            print(f"\n{path} -> {exc}")
+            continue
+        hit += 1
+        print(f"\n{path} {query or ''} -> OK")
+        print(json.dumps(payload, indent=2, ensure_ascii=False)[:4000])
+    if not hit:
+        print("\nSemua path evaluasi ditolak. Pastikan token masih hidup (/tokeninfo di Telegram).")
+        return 1
+
+    result = await endpoints.fetch_evaluation(client, participant_id, period)
+    print(f"\n== hasil parser untuk {period} ==")
+    print(
+        f"filled={result.is_filled} items={len(result.items)} kurikulum={len(result.curriculum)} "
+        f"komentar={'ya' if result.comment else 'tidak'} rata-rata={result.average:.1f}"
+    )
+    for item in (*result.items, *result.curriculum):
+        print(f"  {item.name}: {item.stars or '—'} ({item.predikat or 'tanpa nilai'})")
+    return 0
+
+
+async def main(token: str | None, days: int, use_db: bool, evaluations_only: bool = False) -> int:
     force_utf8_console()
     settings = load_settings()
     token = (token or "").strip().removeprefix("Bearer ").strip()
@@ -56,6 +107,11 @@ async def main(token: str | None, days: int, use_db: bool) -> int:
 
     client = MonevClient(settings.base_url, token)
     try:
+        if evaluations_only:
+            participant_id = settings.participant_id or await endpoints.discover_participant_id(client)
+            period = settings.now().date().isoformat()[:7]
+            return await probe_evaluations(client, participant_id, period)
+
         home = await endpoints.fetch_home(client)
         print("\n== home ==")
         print(json.dumps(home, indent=2, ensure_ascii=False))
@@ -113,5 +169,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-db", action="store_true", help="jangan baca token dari data/bot.db, pakai config.py saja"
     )
+    parser.add_argument(
+        "--evaluations", action="store_true", help="probe kandidat endpoint evaluasi bulanan"
+    )
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(main(args.token, args.days, use_db=not args.no_db)))
+    raise SystemExit(
+        asyncio.run(main(args.token, args.days, use_db=not args.no_db, evaluations_only=args.evaluations))
+    )

@@ -2,7 +2,7 @@
 
 Satu proses asyncio dengan dua loop:
 1. long polling Telegram (perintah user),
-2. scheduler job: polling status, reminder, kesehatan token, pengumuman.
+2. scheduler job: polling status, reminder, kesehatan token, pengumuman, evaluasi.
 
 Tidak butuh port inbound/HTTPS, jadi aman dijalankan sebagai systemd service
 di server Ubuntu.
@@ -21,6 +21,7 @@ from bot import db as dbmod
 from bot import store
 from bot.jobs import token_health
 from bot.jobs.announcements import run_info_job
+from bot.jobs.evaluations import run_evaluation_job
 from bot.jobs.reminders import run_reminders
 from bot.monev.client import MonevError, TokenRejected
 from bot.settings import load_settings
@@ -30,6 +31,8 @@ from bot.telegram.commands import BotContext, apply_cookie, apply_token, dispatc
 REMINDER_EVERY = timedelta(minutes=1)  # jadwal terkunci butuh tick menit (tier 3 menit)
 TOKEN_HEALTH_EVERY = timedelta(minutes=30)
 INFO_EVERY = timedelta(hours=6)
+EVALUATION_EVERY = timedelta(minutes=30)  # hasil evaluasi dikirim hampir instan, bukan 6 jam
+POLL_USER_GAP_SECONDS = 2  # jeda antar pengguna dalam satu siklus polling
 
 
 def force_utf8_console() -> None:
@@ -60,49 +63,52 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
     next_reminder = settings.now()
     next_token = settings.now()
     next_info = settings.now()
+    next_eval = settings.now()
 
     while not stop.is_set():
         now = settings.now()
 
         if now >= next_poll:
             next_poll = now + timedelta(minutes=ctx.poll_minutes)
-            await do_poll(ctx)
+            await do_poll_all(ctx)
 
         if now >= next_reminder:
             next_reminder = now + REMINDER_EVERY
-            user = await ctx.user()
-            # Jadwal pengingat terkunci: selalu jalan, tidak bisa dimatikan dari chat.
-            try:
-                await run_reminders(ctx.db, settings, user, ctx.tg, now=now)
-            except Exception:  # noqa: BLE001
-                logging.exception("job reminder gagal")
+            for user in await ctx.active_users():
+                # Jadwal pengingat terkunci: selalu jalan, tidak bisa dimatikan dari chat.
+                try:
+                    await run_reminders(ctx.db, settings, user, ctx.tg, now=now)
+                except Exception:  # noqa: BLE001
+                    logging.exception("job reminder gagal untuk user %s", user.tg_chat_id)
 
         if now >= next_token:
             next_token = now + TOKEN_HEALTH_EVERY
-            user = await ctx.user()
-            client = ctx.client_for(user)
-            try:
-                # perpanjang dulu (kalau sudah mendekati umur habis), baru peringatan
-                fresh = await token_health.keepalive(
-                    ctx.db, settings, user, client, ctx.tg, now=now
-                )
-                if fresh is not None:
-                    ctx.refresh_user_cache(fresh)
-                await token_health.run_token_health(ctx.db, settings, user, ctx.tg, now=now)
-            except Exception:  # noqa: BLE001
-                logging.exception("job token health gagal")
-            finally:
-                await client.close()
+            for user in await ctx.active_users():
+                await keepalive_one(ctx, settings, user, now)
 
         if now >= next_info:
             next_info = now + INFO_EVERY
-            user = await ctx.user()
-            if not user.token_invalid:
+            for user in await ctx.active_users():
+                if user.token_invalid or not user.bearer_token:
+                    continue
                 client = ctx.client_for(user)
                 try:
                     await run_info_job(ctx.db, settings, user, client, ctx.tg, now=now)
                 except Exception:  # noqa: BLE001
-                    logging.exception("job info gagal")
+                    logging.exception("job info gagal untuk user %s", user.tg_chat_id)
+                finally:
+                    await client.close()
+
+        if now >= next_eval:
+            next_eval = now + EVALUATION_EVERY
+            for user in await ctx.active_users():
+                if user.token_invalid or not user.bearer_token:
+                    continue
+                client = ctx.client_for(user)
+                try:
+                    await run_evaluation_job(ctx.db, settings, user, client, ctx.tg, now=now)
+                except Exception:  # noqa: BLE001
+                    logging.exception("job evaluasi gagal untuk user %s", user.tg_chat_id)
                 finally:
                     await client.close()
 
@@ -112,22 +118,45 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
             pass
 
 
-async def do_poll(ctx: BotContext) -> None:
-    user = await ctx.user()
+async def keepalive_one(ctx: BotContext, settings, user, now) -> None:
+    """Perpanjang token lebih dulu (kalau umur mendekati habis), baru peringatan."""
+    client = ctx.client_for(user)
+    try:
+        fresh = await token_health.keepalive(
+            ctx.db, settings, user, client, ctx.tg, now=now
+        )
+        if fresh is not None:
+            ctx.refresh_user_cache(fresh)
+        await token_health.run_token_health(ctx.db, settings, user, ctx.tg, now=now)
+    except Exception:  # noqa: BLE001
+        logging.exception("job token health gagal untuk user %s", user.tg_chat_id)
+    finally:
+        await client.close()
+
+
+async def do_poll(ctx: BotContext, user=None) -> None:
+    user = user or await ctx.user()
     if not user.bearer_token:
-        logging.warning("belum ada token — kirim /cookie atau /token lewat chat")
+        logging.warning(
+            "user %s belum punya token — kirim /cookie atau /token lewat chat",
+            user.tg_chat_id,
+        )
         return
     if user.token_invalid and not user.can_auto_refresh:
         # token mati dan tidak ada cookie: tunggu aksi user, jangan spam API
         return
 
     try:
-        ctx.last_result = await poll_auto(ctx)
+        result = await poll_auto(ctx, user)
+        if str(user.tg_chat_id) == str(ctx.settings.telegram_chat_id):
+            ctx.last_result = result
     except TokenRejected as exc:
         await token_health.mark_token_invalid(ctx.db, user, ctx.tg, str(exc), ctx.settings.now())
-        ctx.refresh_user_cache(await store.get_user(ctx.db, user.tg_chat_id))
+        fresh = await store.get_user(ctx.db, user.tg_chat_id)
+        if fresh:
+            ctx.refresh_user_cache(fresh)
     except MonevError as exc:
-        logging.warning("polling gagal: %s", exc)
+        logging.warning("polling user %s gagal: %s", user.tg_chat_id, exc)
         await store.add_event(
             ctx.db,
             user.tg_chat_id,
@@ -139,7 +168,17 @@ async def do_poll(ctx: BotContext) -> None:
             ctx.settings.now(),
         )
     except Exception:  # noqa: BLE001
-        logging.exception("polling gagal tak terduga")
+        logging.exception("polling user %s gagal tak terduga", user.tg_chat_id)
+
+
+async def do_poll_all(ctx: BotContext) -> None:
+    """Satu siklus polling untuk semua pengguna aktif, berurutan dengan jeda."""
+    users = await ctx.active_users()
+    for index, user in enumerate(users):
+        if index:
+            # Jeda kecil antar user supaya N akun tidak jadi satu ledakan request.
+            await asyncio.sleep(POLL_USER_GAP_SECONDS)
+        await do_poll(ctx, user)
 
 
 async def telegram_loop(ctx: BotContext, stop: asyncio.Event) -> None:
@@ -157,12 +196,18 @@ async def telegram_loop(ctx: BotContext, stop: asyncio.Event) -> None:
             message = update.get("message")
             if not message:
                 continue
-            chat_id = str(message.get("chat", {}).get("id", ""))
+            chat_info = message.get("chat", {}) or {}
+            chat_id = str(chat_info.get("id", ""))
+            if chat_info.get("type") not in (None, "private"):
+                # Grup/channel: bot ini memantau akun pribadi, tidak di grup.
+                continue
+            sender = message.get("from", {}) or {}
+            display_name = sender.get("first_name") or sender.get("username") or ""
             text = message.get("text") or message.get("caption") or ""
             if not text:
                 continue
             try:
-                await dispatch(ctx, chat_id, text)
+                await dispatch(ctx, chat_id, text, display_name)
             except Exception:  # noqa: BLE001
                 logging.exception("dispatch gagal")
 
@@ -175,8 +220,10 @@ async def main(once: bool = False, force_token: str | None = None, force_cookie:
         logging.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID kosong — salin config.py.example")
         return 2
     if not settings.participant_id:
-        logging.error("PARTICIPANT_ID kosong di config.py")
-        return 2
+        logging.warning(
+            "PARTICIPANT_ID kosong — owner tidak di-seed dari config; pengguna "
+            "(termasuk Anda) daftar lewat chat: /daftar atau tempel token."
+        )
 
     database = await dbmod.connect(settings.db_path)
     tg = TelegramClient(settings.telegram_bot_token)
@@ -188,7 +235,17 @@ async def main(once: bool = False, force_token: str | None = None, force_cookie:
 
     user = await ctx.user()
     me = await tg.get_me()
-    logging.info("bot aktif sebagai @%s, chat %s, interval %d menit", me.get("username"), user.tg_chat_id, ctx.poll_minutes)
+    everyone = await store.list_users(database, active_only=False)
+    logging.info(
+        "bot aktif sebagai @%s, owner chat %s, interval %d menit, %d pengguna terdaftar "
+        "(%d aktif), pendaftaran %s",
+        me.get("username"),
+        user.tg_chat_id,
+        ctx.poll_minutes,
+        len(everyone),
+        sum(1 for u in everyone if u.is_active_user),
+        "terbuka" if settings.registration_open else "perlu kode undangan",
+    )
 
     if force_token:
         message = await apply_token(ctx, force_token)
@@ -202,7 +259,7 @@ async def main(once: bool = False, force_token: str | None = None, force_cookie:
         )
 
     if once:
-        await do_poll(ctx)
+        await do_poll_all(ctx)
         result = ctx.last_result
         print(
             "hasil:",
