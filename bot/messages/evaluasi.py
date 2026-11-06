@@ -1,8 +1,12 @@
-"""Kalimat untuk evaluasi bulanan mentor: kartu hasil, status belum diisi, motivasi.
+"""Kalimat untuk evaluasi bulanan mentor: status belum diisi, alert, kartu hasil, motivasi.
 
 Aturan main yang dijaga di sini: apa yang tidak ada di payload tidak boleh muncul
 di pesan. Baris tanpa bintang ditampilkan sebagai "—" (bukan ⭐ karangan), bagian
 kurikulum/komentar dilewati kalau portal memang tidak mengirimnya.
+
+Notifikasi otomatis selalu dua pesan berurutan: alert singkat begitu mentor mengisi
+(layar user langsung berubah) lalu kartu rinciannya. Tidak ada jeda tunggu karena
+nilainya sudah ada di payload yang sama.
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ def motivation_sentence(result: EvaluationResult) -> str:
 
 
 def eval_result_message(result: EvaluationResult) -> str:
-    """(C) Kartu hasil evaluasi — dikirim sesaat setelah mentor mengisi."""
+    """(C) Kartu hasil evaluasi — Pesan 2, dikirim tepat setelah alert."""
     lines = [
         "🎉 <b>HASIL EVALUASI MAGANG KELUAR!</b>",
         "",
@@ -98,9 +102,22 @@ def eval_result_message(result: EvaluationResult) -> str:
 
 
 def eval_pending_message(period: str) -> str:
-    """/evaluasi saat mentor belum mengisi — status jujur, tanpa angka palsu."""
+    """(A) Cek manual saat mentor belum mengisi — status jujur, tanpa angka palsu."""
     return (
-        f"⏳ <b>EVALUASI {esc(month_year_id(period)).upper()} BELUM DIISI MENTOR</b>\n\n"
-        "Belum ada nilai yang bisa ditunjukkan. Pengingat H-7 sampai hari-H tetap "
-        "berjalan, dan bot mengirim kartu hasil begitu mentor mengisi."
+        "⏳ <b>EVALUASI MENTOR BELUM DIISI</b>\n\n"
+        f"📅 Periode: {esc(month_year_id(period))}\n"
+        "📌 Status: ⚠️ Belum ada nilai di portal"
+    )
+
+
+def eval_alert_message() -> str:
+    """(B) Pesan 1 — alert instan begitu status berubah jadi "diisi mentor".
+
+    Sengaja tanpa angka: rincian nilainya datang di pesan berikutnya, jadi kalimat
+    "sedang memuat" di sini memang benar, bukan hiasan.
+    """
+    return (
+        "🔔 <b>NOTIFIKASI EVALUASI MAGANG</b>\n\n"
+        "✨ Mentor kamu baru saja selesai mengisi evaluasi bulanan di portal monev!\n\n"
+        "Sedang memuat rincian nilai... ⏳"
     )

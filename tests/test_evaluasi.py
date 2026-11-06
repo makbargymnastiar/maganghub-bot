@@ -1,4 +1,4 @@
-"""Tes evaluasi bulanan: pembaca laporan portal, kartu hasil, motivasi, dan job pemantau."""
+"""Tes evaluasi bulanan: pembaca laporan portal, template pesan, motivasi, job, /cek."""
 
 from datetime import datetime
 
@@ -12,6 +12,8 @@ from bot.monev.client import MonevError
 from bot.messages import evaluasi
 from bot.models import EvalItem, EvaluationResult
 from bot.settings import load_settings
+from bot.telegram import commands
+from tests.test_poll_diff import FakeMonevClient as PollFake, make_payloads
 
 TZ = "+07:00"
 NOW = datetime.fromisoformat(f"2026-11-05T10:00:00{TZ}")
@@ -317,6 +319,35 @@ def test_motivasi_stabil_per_periode():
     assert evaluasi.motivation_sentence(result) == evaluasi.motivation_sentence(result)
 
 
+def test_respons_a_status_belum_diisi():
+    text = evaluasi.eval_pending_message(PERIOD)
+    assert text == (
+        "⏳ <b>EVALUASI MENTOR BELUM DIISI</b>\n\n"
+        "📅 Periode: November 2026\n"
+        "📌 Status: ⚠️ Belum ada nilai di portal"
+    )
+
+
+def test_pesan_alert_mendahului_kartu():
+    text = evaluasi.eval_alert_message()
+    assert text == (
+        "🔔 <b>NOTIFIKASI EVALUASI MAGANG</b>\n\n"
+        "✨ Mentor kamu baru saja selesai mengisi evaluasi bulanan di portal monev!\n\n"
+        "Sedang memuat rincian nilai... ⏳"
+    )
+    # Alert tidak boleh mengandung angka: rinciannya ada di pesan berikutnya.
+    assert "⭐" not in text
+
+
+class CekClient(PollFake):
+    """Fake polling yang membalik MonevError (bukan KeyError) untuk path asing."""
+
+    async def get(self, path, params=None):
+        if path not in self.payloads:
+            raise MonevError(f"tidak ada fixture untuk {path}", 404)
+        return await super().get(path, params)
+
+
 class FakeMonevClient:
     """Balik payload per path; path yang tidak dikenal melempar MonevError."""
 
@@ -393,19 +424,22 @@ async def test_fetch_evaluation_meneruskan_error_token(ctx):
         await endpoints.fetch_evaluation(client, user.participant_id, PERIOD)
 
 
-async def test_job_mengirim_kartu_sekali_per_periode(ctx):
+async def test_job_mengirim_alert_lalu_kartu_cukup_satu_kali_per_periode(ctx):
     settings, database, user = ctx
     client = FakeMonevClient({endpoints.MONTHLY_REPORTS_PATH: REPORT})
     tg = FakeTelegram()
 
     sent = await run_evaluation_job(database, settings, user, client, tg, now=NOW)
-    assert sent == 1
-    assert "HASIL EVALUASI MAGANG KELUAR" in tg.messages[0][1]
+    # Dua pesan sekali jalan: alert (pesan 1) + rincian (pesan 2).
+    assert sent == 2
+    assert "NOTIFIKASI EVALUASI MAGANG" in tg.messages[0][1]
+    assert "HASIL EVALUASI MAGANG KELUAR" in tg.messages[1][1]
+    assert "⭐" not in tg.messages[0][1]
     assert await store.flag_exists(database, user.tg_chat_id, "", f"eval:{PERIOD}:filled")
 
     sent_again = await run_evaluation_job(database, settings, user, client, tg, now=NOW)
     assert sent_again == 0
-    assert len(tg.messages) == 1
+    assert len(tg.messages) == 2
 
 
 async def test_job_ikut_memantau_bulan_sebelumnya(ctx):
@@ -417,7 +451,7 @@ async def test_job_ikut_memantau_bulan_sebelumnya(ctx):
     tg = FakeTelegram()
 
     sent = await run_evaluation_job(database, settings, user, client, tg, now=NOW)
-    assert sent == 2
+    assert sent == 4  # alert + kartu untuk masing-masing dari dua periode
     assert await store.flag_exists(database, user.tg_chat_id, "", f"eval:{PREV}:filled")
 
 
@@ -455,3 +489,45 @@ async def test_job_tidak_mengulang_periode_yang_sudah_terkirim(ctx):
     assert tg.messages == []
     assert not any(call[0] == endpoints.MONTHLY_REPORTS_PATH and
                    call[1]["start_date"] == "2026-11-01" for call in client.calls)
+
+
+# --- /cek ikut melaporkan status evaluasi ---
+
+
+def _bot_ctx(settings, database, client):
+    ctx = commands.BotContext(db=database, settings=settings, tg=FakeTelegram(), poll_minutes=15)
+    ctx.client_for = lambda _user: client  # type: ignore[method-assign]
+    return ctx
+
+
+async def test_cek_menempelkan_respons_a_saat_evaluasi_masih_kosong(ctx, monkeypatch):
+    settings, database, user = ctx
+    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
+    payloads = make_payloads()
+    payloads[endpoints.MONTHLY_REPORTS_PATH] = EMPTY_REPORT
+    bot_ctx = _bot_ctx(settings, database, CekClient(payloads))
+
+    reply = await commands.cmd_cek(bot_ctx, user)
+    assert "EVALUASI MENTOR BELUM DIISI" in reply
+    assert "📅 Periode: November 2026" in reply
+    assert "📌 Status: ⚠️ Belum ada nilai di portal" in reply
+
+
+async def test_cek_tetap_ringkas_saat_evaluasi_sudah_diisi(ctx, monkeypatch):
+    settings, database, user = ctx
+    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
+    payloads = make_payloads()
+    payloads[endpoints.MONTHLY_REPORTS_PATH] = REPORT
+    bot_ctx = _bot_ctx(settings, database, CekClient(payloads))
+
+    reply = await commands.cmd_cek(bot_ctx, user)
+    assert "BELUM DIISI" not in reply
+
+
+async def test_cek_tidak_rusak_saat_endpoint_evaluasi_error(ctx, monkeypatch):
+    settings, database, user = ctx
+    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
+    bot_ctx = _bot_ctx(settings, database, CekClient(make_payloads()))
+
+    reply = await commands.cmd_cek(bot_ctx, user)
+    assert reply  # status harian tetap dijawab, tanpa blok evaluasi

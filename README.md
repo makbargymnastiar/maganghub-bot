@@ -38,7 +38,7 @@ bot/
     absensi.py        notif perubahan status + catatan mentor + pengumuman/warning
     pengisian.py      pengingat berjenjang (soft/rawan/dekat/mepet) + cek sore + terlewat
     harian.py        paket pagi: libur hari ini, pengingat evaluasi H-7..H-1, hari-H (tgl 9)
-    evaluasi.py       kartu hasil evaluasi + kalimat motivasi dinamis
+    evaluasi.py       status belum diisi, alert instan, kartu hasil + kalimat motivasi dinamis
     tagihan.py        tagihan absensi belum di-ACC ≥5 hari
     sesi.py           token/cookie: panduan, kedaluwarsa, tersimpan, ditolak
     chat.py           /help, /start, /status, /cek, dan balasan perintah lain
@@ -126,10 +126,31 @@ tengah hari tidak mengulang pesan yang sudah terkirim.
 Mentor mengisi evaluasi sikap setiap bulan, dan isinya biasanya baru masuk pada
 tanggal 9 bulan berikutnya. Karena itu job evaluasi (tiap 30 menit, terpisah dari
 polling absensi) menanyakan **dua periode sekaligus**: bulan berjalan + bulan
-sebelumnya. Begitu status berubah menjadi "diisi mentor", satu kartu dikirim dan
-flag `eval:<YYYY-MM>:filled` menjamin kartu yang sama tidak pernah datang dua kali
-— termasuk setelah restart service, dan termasuk kalau mentor mengedit nilainya
-belakangan.
+sebelumnya. Begitu status berubah menjadi "diisi mentor", flag `eval:<YYYY-MM>:filled`
+ditulis lebih dulu lalu **dua pesan** dikirim berurutan:
+
+| Pesan | Isi |
+| --- | --- |
+| 1 — alert | `🔔 NOTIFIKASI EVALUASI MAGANG` + "mentor baru saja selesai mengisi", "sedang memuat rincian nilai" (tanpa angka, memang belum ditampilkan) |
+| 2 — kartu | `🎉 HASIL EVALUASI MAGANG KELUAR!` + 8 aspek, capaian kurikulum, komentar mentor, kalimat motivasi |
+
+Flag ditulis sebelum mengirim supaya koneksi Telegram yang putus di tengah jalan
+tidak menghasilkan alert ganda. Kartu yang sama tidak pernah datang dua kali untuk
+satu periode — termasuk setelah restart service, dan termasuk kalau mentor mengedit
+nilainya belakangan.
+
+Cek manual (`/cek` dan `/evaluasi [YYYY-MM]`) memakai Respons A saat portal masih
+kosong:
+
+```
+⏳ EVALUASI MENTOR BELUM DIISI
+
+📅 Periode: November 2026
+📌 Status: ⚠️ Belum ada nilai di portal
+```
+
+Di `/cek` blok itu hanya menempel kalau evaluasi bulan ini memang belum ada nilainya;
+sudah terisi = `/cek` tetap ringkas seperti biasanya (kartu lengkap lewat `/evaluasi`).
 
 Isi kartu: 8 poin penilaian sikap (kehadiran & disiplin, sikap & perilaku,
 komunikasi, inisiatif & tanggung jawab, adaptasi, pengetahuan teknis,
@@ -148,7 +169,7 @@ dibaca ulang tidak berubah-ubah.
 
 Aturan utamanya: **tidak ada angka karangan**. Nilai yang tidak terbaca ditampilkan
 apa adanya ("—"), bagian yang tidak dikirim portal dilewati, dan kalau mentor belum
-mengisi, `/evaluasi` menjawab "belum diisi" — bukan kartu kosong.
+mengisi, cek manual menjawab Respons A — bukan kartu kosong.
 
 Jebakan yang sudah dinetralkan: angka yang dikirim portal adalah **peringkat 1..4**
 (1 = terbaik), bukan jumlah bintang. `1` jadi ⭐⭐⭐⭐⭐, `4` jadi ⭐⭐. Kode
@@ -298,7 +319,7 @@ sudo journalctl -fu monev-bot
 | `/start` | sambutan & cara mulai (untuk yang baru pertama chat) |
 | `/status` | status hari ini + riwayat 7 hari |
 | `/cek` | paksa polling sekarang, laporkan perubahan |
-| `/evaluasi [YYYY-MM]` | hasil evaluasi bulan ini (atau bulan yang diminta) on-demand |
+| `/evaluasi [YYYY-MM]` | hasil evaluasi bulan ini (atau bulan yang diminta) on-demand; Respons A kalau mentor belum mengisi |
 | `/token <Bearer …>` | ganti token sesi (divalidasi dulu ke API) |
 | `/tokeninfo` | token aktif?, sisa umur, fingerprint sesi |
 | `/interval <menit>` | ubah frekuensi polling (min 5, tersimpan di DB, berlaku untuk semua pengguna) |
@@ -323,7 +344,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 149 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, registrasi multi-user, laporan evaluasi + kartu hasil, penggalian nama endpoint, kalimat pesan, b64/JWT/settings
+python -m pytest -q                # 154 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, registrasi multi-user, laporan evaluasi + alert + kartu hasil, penggalian nama endpoint, kalimat pesan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 python scripts/probe_api.py --evaluations        # raw JSON laporan bulanan + hasil parser

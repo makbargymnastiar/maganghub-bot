@@ -345,6 +345,31 @@ async def apply_cookie(ctx: BotContext, raw_cookie: str, chat_id: str | None = N
     return sesi.cookie_saved_message(mask_token(cookie.split("=", 1)[-1]), ttl_seconds(token) // 60) + note
 
 
+async def evaluation_status_note(ctx: BotContext, user: User) -> str:
+    """Blok status evaluasi untuk /cek: Respons A kalau mentor belum mengisi.
+
+    Sengaja hanya menambah sesuatu saat masih kosong. Begitu evaluasi terisi,
+    kartunya panjang dan sudah ada jalannya sendiri (/evaluasi plus notifikasi
+    otomatis), jadi /cek tetap ringkas seperti template yang sudah disetujui.
+    Semua kegagalan di sini dimaklumi: status harian hari ini tidak boleh rusak
+    cuma karena endpoint laporan bulanan bermasalah.
+    """
+    if not user.participant_id:
+        return ""
+    period = ctx.settings.now().date().isoformat()[:7]
+    client = ctx.client_for(user)
+    try:
+        result = await endpoints.fetch_evaluation(client, user.participant_id, period)
+    except Exception as exc:  # noqa: BLE001 - /cek tidak boleh gagal gara-gara evaluasi
+        log.info("status evaluasi untuk /cek tidak terbaca: %s", exc)
+        return ""
+    finally:
+        await client.close()
+    if result.is_filled:
+        return ""
+    return "\n\n" + evaluasi.eval_pending_message(period)
+
+
 async def cmd_cek(ctx: BotContext, user: User, args: str = "") -> str:
     if not user.bearer_token:
         return chat.cek_no_token_message()
@@ -363,14 +388,15 @@ async def cmd_cek(ctx: BotContext, user: User, args: str = "") -> str:
         return chat.api_error_message(str(exc))
 
     ctx.last_result = result
+    note = await evaluation_status_note(ctx, user)
 
     if result.seeded:
         return chat.cek_baseline_message(
             len(result.notes), result.today_label.title if result.today_label else "-"
-        )
+        ) + note
     if not result.changes:
-        return chat.cek_no_change_message(result.today_label or ALL_LABELS["UNKNOWN"])
-    return chat.cek_changes_message(result.changes)
+        return chat.cek_no_change_message(result.today_label or ALL_LABELS["UNKNOWN"]) + note
+    return chat.cek_changes_message(result.changes) + note
 
 
 async def cmd_status(ctx: BotContext, user: User, args: str = "") -> str:

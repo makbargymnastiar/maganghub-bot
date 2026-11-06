@@ -5,6 +5,12 @@ payload: cukup satu flag `eval:<periode>:filled` per pengguna. Begitu flag ada,
 periode itu tidak pernah dibahas lagi — termasuk kalau mentor mengedit nilainya
 belakangan, karena mengirim ulang kartu yang mirip cuma jadi spam.
 
+Satu perubahan status = DUA pesan berurutan: alert bahwa mentor baru saja mengisi
+(rincian disebut sedang dimuat), lalu kartu hasilnya. Keduanya berasal dari query
+yang sama, jadi tidak ada jeda di antaranya; alert dikirim duluan supaya notifikasi
+di layar user langsung berisi. Flag ditulis SEBELUM mengirim, supaya kalau koneksi
+Telegram putus di tengah jalan bot tidak mengirim alert yang sama dua kali.
+
 Periode yang dilihat: bulan berjalan + bulan sebelumnya. Evaluasi bulan November
 baru ditulis mentor sekitar tanggal 9 Desember, jadi bulan lalu wajib di-poll juga.
 
@@ -59,7 +65,7 @@ async def run_evaluation_job(
     *,
     now: datetime | None = None,
 ) -> int:
-    """Kirim kartu hasil evaluasi yang baru muncul. Return jumlah pesan terkirim."""
+    """Kirim alert + kartu hasil untuk evaluasi yang baru muncul. Return jumlah pesan."""
     now = now or settings.now()
     if not user.participant_id:
         return 0
@@ -77,6 +83,8 @@ async def run_evaluation_job(
             continue
 
         await store.set_flag(db, user.tg_chat_id, "", _flag(period), now)
+        # Pesan 1: alert instan. Pesan 2: rincian nilainya.
+        await notify.send_message(user.tg_chat_id, evaluasi.eval_alert_message())
         await notify.send_message(user.tg_chat_id, evaluasi.eval_result_message(result))
         await store.add_event(
             db,
@@ -89,6 +97,6 @@ async def run_evaluation_job(
             now,
         )
         log.info("evaluasi %s terisi untuk user %s", period, user.tg_chat_id)
-        sent += 1
+        sent += 2
 
     return sent
