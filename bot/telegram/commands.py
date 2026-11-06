@@ -345,32 +345,12 @@ async def apply_cookie(ctx: BotContext, raw_cookie: str, chat_id: str | None = N
     return sesi.cookie_saved_message(mask_token(cookie.split("=", 1)[-1]), ttl_seconds(token) // 60) + note
 
 
-async def evaluation_status_note(ctx: BotContext, user: User) -> str:
-    """Blok status evaluasi untuk /cek: Respons A kalau mentor belum mengisi.
-
-    Sengaja hanya menambah sesuatu saat masih kosong. Begitu evaluasi terisi,
-    kartunya panjang dan sudah ada jalannya sendiri (/evaluasi plus notifikasi
-    otomatis), jadi /cek tetap ringkas seperti template yang sudah disetujui.
-    Semua kegagalan di sini dimaklumi: status harian hari ini tidak boleh rusak
-    cuma karena endpoint laporan bulanan bermasalah.
-    """
-    if not user.participant_id:
-        return ""
-    period = ctx.settings.now().date().isoformat()[:7]
-    client = ctx.client_for(user)
-    try:
-        result = await endpoints.fetch_evaluation(client, user.participant_id, period)
-    except Exception as exc:  # noqa: BLE001 - /cek tidak boleh gagal gara-gara evaluasi
-        log.info("status evaluasi untuk /cek tidak terbaca: %s", exc)
-        return ""
-    finally:
-        await client.close()
-    if result.is_filled:
-        return ""
-    return "\n\n" + evaluasi.eval_pending_message(period)
-
-
 async def cmd_cek(ctx: BotContext, user: User, args: str = "") -> str:
+    """Status harian (absensi + log) saja.
+
+    Sengaja tidak ikut melaporkan evaluasi bulanan: itu ranah `/evaluasi` dan
+    notifikasi otomatis, dan dua-duanya sudah menyebut periodenya sendiri.
+    """
     if not user.bearer_token:
         return chat.cek_no_token_message()
     try:
@@ -388,15 +368,13 @@ async def cmd_cek(ctx: BotContext, user: User, args: str = "") -> str:
         return chat.api_error_message(str(exc))
 
     ctx.last_result = result
-    note = await evaluation_status_note(ctx, user)
-
     if result.seeded:
         return chat.cek_baseline_message(
             len(result.notes), result.today_label.title if result.today_label else "-"
-        ) + note
+        )
     if not result.changes:
-        return chat.cek_no_change_message(result.today_label or ALL_LABELS["UNKNOWN"]) + note
-    return chat.cek_changes_message(result.changes) + note
+        return chat.cek_no_change_message(result.today_label or ALL_LABELS["UNKNOWN"])
+    return chat.cek_changes_message(result.changes)
 
 
 async def cmd_status(ctx: BotContext, user: User, args: str = "") -> str:
@@ -548,25 +526,31 @@ PERIODE_RE = re.compile(r"^\d{4}-\d{2}$")
 async def cmd_evaluasi(ctx: BotContext, user: User, args: str = "") -> str:
     """/evaluasi [YYYY-MM] — kartu hasil evaluasi bulanan mentor.
 
-    Periode boleh diminta eksplisit karena evaluasi bulan lalu baru terisi pada
-    tanggal 9 bulan berikutnya; tanpa argumen yang ditanya bulan berjalan.
+    Periode boleh diminta eksplisit dan kalau diminta hanya bulan itu yang dilihat.
+    Tanpa argumen, bulan berjalan ditanya duluan tapi periode sebelumnya ikut dilihat:
+    evaluasi bulan lalu baru ditulis mentor pada awal bulan berikutnya, jadi "bulan
+    ini masih kosong" bukan jawaban yang berguna kalau sebenarnya ada laporan yang
+    sudah dinilai. Kartu selalu menyebut periodenya sendiri.
     """
-    period = (args or "").strip() or ctx.settings.now().date().isoformat()[:7]
-    if not PERIODE_RE.match(period):
-        return "Format: <code>/evaluasi 2026-11</code> (kosong = bulan ini)."
+    period = (args or "").strip()
+    if period and not PERIODE_RE.match(period):
+        return "Format: <code>/evaluasi 2026-11</code> (kosong = bulan terbaru yang sudah dinilai)."
     if not user.participant_id:
         return chat.participant_id_needed_message()
 
     client = ctx.client_for(user)
     try:
-        result = await evaluations.lookup_evaluation(ctx.db, user, client, period, ctx.settings.now())
+        if period:
+            result = await evaluations.lookup_evaluation(ctx.db, user, client, period, ctx.settings.now())
+        else:
+            result = await evaluations.lookup_latest_evaluation(ctx.db, user, client, ctx.settings.now())
     except MonevError as exc:
         return chat.api_error_message(str(exc))
     finally:
         await client.close()
 
     if not result.is_filled:
-        return evaluasi.eval_pending_message(period)
+        return evaluasi.eval_pending_message(result.period)
     return evaluasi.eval_result_message(result)
 
 

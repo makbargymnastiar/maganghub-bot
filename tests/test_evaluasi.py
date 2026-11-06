@@ -1,4 +1,4 @@
-"""Tes evaluasi bulanan: pembaca laporan portal, template pesan, motivasi, job, /cek."""
+"""Tes evaluasi bulanan: pembaca laporan portal, template pesan, motivasi, job, /evaluasi."""
 
 from datetime import datetime
 
@@ -213,6 +213,41 @@ def test_daftar_laporan_diambil_yang_cocok_dengan_periode():
     assert evaluation.parse_evaluation(payload, PREV).comment.startswith("Catatan bulan Oktober")
     # Daftar laporan orang lain / bulan lain -> tidak ada yang boleh dipinjam.
     assert evaluation.parse_evaluation({"data": [OTHER_MONTH["data"][0]]}, PERIOD).items == []
+
+
+@pytest.mark.parametrize(
+    "nilai",
+    ["2026-11", "2026-11-01", "2026/11", "202611", "11/2026", "November 2026", "november-2026"],
+)
+def test_format_bulan_laporan_yang_diterima(nilai):
+    # Nama field-nya sudah diketahui, format nilainya belum tentu. Semua bentuk yang
+    # masuk akal diterima, dan bulan lain tetap tidak dipinjam.
+    payload = {"data": [{"period": nilai, "attitude_grade": "EXCELLENT"}]}
+    assert evaluation.parse_evaluation(payload, PERIOD).is_filled is True
+    assert evaluation.parse_evaluation(payload, PREV).is_filled is False
+
+
+def test_bulan_dari_field_month_dan_year_terpisah():
+    payload = {"data": [{"month": 11, "year": 2026, "attitude_grade": "EXCELLENT"}]}
+    assert evaluation.parse_evaluation(payload, PERIOD).is_filled is True
+    assert evaluation.parse_evaluation(payload, PREV).is_filled is False
+
+
+def test_banyak_laporan_tanpa_bulan_tidak_ada_yang_dipinjam():
+    # Job menanyakan dua periode sekaligus. Kalau tidak satu pun laporan menyebut
+    # bulannya, kartu yang sama bisa terkirim dua kali untuk bulan yang berbeda.
+    payload = {"data": [{"attitude_grade": "EXCELLENT"}, {"attitude_grade": "GOOD"}]}
+    assert evaluation.parse_evaluation(payload, PERIOD).has_content is False
+    # Satu laporan saja: memang cuma itu yang ada, jadi wajar dipakai.
+    assert evaluation.parse_evaluation({"data": [{"attitude_grade": "EXCELLENT"}]}, PERIOD).is_filled is True
+
+
+def test_declared_periods_hanya_untuk_diagnosis():
+    # Alat probe memakainya untuk menunjukkan bulan apa yang sebenarnya dikirim portal.
+    payload = {"data": [OTHER_MONTH["data"][0], REPORT["data"][0]]}
+    assert evaluation.declared_periods(payload) == [PREV, PERIOD]
+    assert evaluation.declared_periods({"data": [{"attitude_grade": "GOOD"}]}) == [""]
+    assert evaluation.declared_periods({"data": []}) == []
 
 
 def test_laporan_terbungkus_satu_level_ikut_dibaca():
@@ -487,11 +522,11 @@ async def test_job_tidak_mengulang_periode_yang_sudah_terkirim(ctx):
     sent = await run_evaluation_job(database, settings, user, client, tg, now=NOW)
     assert sent == 0
     assert tg.messages == []
-    assert not any(call[0] == endpoints.MONTHLY_REPORTS_PATH and
-                   call[1]["start_date"] == "2026-11-01" for call in client.calls)
+    # Periode yang sudah ada flag-nya tidak ditanya lagi, dengan params apa pun.
+    assert not any(params and params.get("start_date") == "2026-11-01" for _, params in client.calls)
 
 
-# --- /cek ikut melaporkan status evaluasi ---
+# --- /cek cukup status harian; evaluasi punya jalannya sendiri ---
 
 
 def _bot_ctx(settings, database, client):
@@ -500,34 +535,123 @@ def _bot_ctx(settings, database, client):
     return ctx
 
 
-async def test_cek_menempelkan_respons_a_saat_evaluasi_masih_kosong(ctx, monkeypatch):
+async def test_cek_hanya_status_harian_tanpa_blok_evaluasi(ctx, monkeypatch):
+    """Template /cek yang disetujui isinya absensi; evaluasi ranah /evaluasi."""
     settings, database, user = ctx
     monkeypatch.setattr(type(settings), "now", lambda self: NOW)
     payloads = make_payloads()
     payloads[endpoints.MONTHLY_REPORTS_PATH] = EMPTY_REPORT
-    bot_ctx = _bot_ctx(settings, database, CekClient(payloads))
+    client = CekClient(payloads)
+    bot_ctx = _bot_ctx(settings, database, client)
 
     reply = await commands.cmd_cek(bot_ctx, user)
-    assert "EVALUASI MENTOR BELUM DIISI" in reply
+    assert "Hari ini" in reply
+    assert "EVALUASI" not in reply.upper()
+    # Bukan cuma teksnya yang hilang: endpoint laporan bulanan tidak ikut ditanya.
+    assert not any(endpoints.MONTHLY_REPORTS_PATH in call[0] for call in client.calls)
+
+
+class ScriptedClient:
+    """Balik payload per (path, berjendela atau tidak) — untuk menguji urutan query."""
+
+    def __init__(self, responses: dict[tuple[str, str], object]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, dict | None]] = []
+
+    async def get(self, path, params=None):
+        self.calls.append((path, params))
+        key = (path, "window" if (params or {}).get("start_date") else "all")
+        value = self.responses.get(key)
+        if value is None:
+            raise MonevError(f"tidak ada fixture untuk {key}", status=404)
+        return value
+
+    async def close(self):
+        pass
+
+
+async def test_fetch_menemuk_laporan_yang_tersimpan_di_luar_jendela_tanggal(ctx):
+    _, _, user = ctx
+    # Percobaan pertama (jendela 1-31 Oktober) jawab kosong — portal menyimpan
+    # laporan di tanggal luar bulan kalender periodenya. Daftar seluruh laporan
+    # masih punya jawabannya.
+    client = ScriptedClient({
+        (endpoints.MONTHLY_REPORTS_PATH, "window"): {"data": []},
+        (endpoints.MONTHLY_REPORTS_PATH, "all"): {"data": [OTHER_MONTH["data"][0]]},
+    })
+    result = await endpoints.fetch_evaluation(client, user.participant_id, PREV)
+
+    assert result.is_filled is True
+    assert result.comment.startswith("Catatan bulan Oktober")
+    assert client.calls[0][1]["start_date"] == "2026-10-01"  # yang sempit dicoba duluan
+    assert len(client.calls) > 1                              # fallback baru jalan setelahnya
+
+
+async def test_endpoint_terbaru_hanya_ditanya_kalau_daftar_tidak_menjawab(ctx):
+    _, _, user = ctx
+    # Kedua query /monthly-reports ditolak (path-nya beda dari dugaan portal), jadi
+    # `/monthly-reports/latest` yang jadi penolong.
+    client = ScriptedClient({(endpoints.MONTHLY_REPORTS_LATEST_PATH, "all"): REPORT})
+    result = await endpoints.fetch_evaluation(client, user.participant_id, PERIOD)
+    assert result.is_filled is True
+    assert len(result.items) == 8
+    assert any(path == endpoints.MONTHLY_REPORTS_LATEST_PATH for path, _ in client.calls)
+
+
+async def test_daftar_laporan_yang_menjawab_tidak_ditambah_lagi(ctx):
+    _, _, user = ctx
+    # Jawaban "semua laporan" sudah superhimpunan dari "latest": kalau yang pertama
+    # menjawab, tidak ada gunanya bertanya tiga kali tiap 30 menit.
+    client = ScriptedClient({
+        (endpoints.MONTHLY_REPORTS_PATH, "window"): {"data": []},
+        (endpoints.MONTHLY_REPORTS_PATH, "all"): {"data": []},
+    })
+    result = await endpoints.fetch_evaluation(client, user.participant_id, PERIOD)
+    assert result.is_filled is False
+    assert not any(path == endpoints.MONTHLY_REPORTS_LATEST_PATH for path, _ in client.calls)
+    assert len(client.calls) == 2
+
+
+async def test_fetch_naikkan_error_saat_semua_sumber_menolak(ctx):
+    _, _, user = ctx
+    client = ScriptedClient({})
+    with pytest.raises(MonevError):
+        await endpoints.fetch_evaluation(client, user.participant_id, PERIOD)
+
+
+async def test_evaluasi_tanpa_argumen_menampilkan_bulan_yang_sudah_dinilai(ctx, monkeypatch):
+    settings, database, user = ctx
+    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
+    # November masih kosong, Oktober sudah dinilai mentor awal bulan ini.
+    client = FakeMonevClient({endpoints.MONTHLY_REPORTS_PATH: {"data": [OTHER_MONTH["data"][0]]}})
+    bot_ctx = _bot_ctx(settings, database, client)
+
+    reply = await commands.cmd_evaluasi(bot_ctx, user)
+    assert "HASIL EVALUASI MAGANG KELUAR" in reply
+    assert "Oktober 2026" in reply      # kartu jujur menyebut bulan laporannya sendiri
+    assert "November 2026" not in reply
+
+
+async def test_evaluasi_tanpa_argumen_respons_a_saat_semua_periode_kosong(ctx, monkeypatch):
+    settings, database, user = ctx
+    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
+    client = FakeMonevClient({endpoints.MONTHLY_REPORTS_PATH: EMPTY_REPORT})
+    bot_ctx = _bot_ctx(settings, database, client)
+
+    reply = await commands.cmd_evaluasi(bot_ctx, user)
+    assert reply == evaluasi.eval_pending_message(PERIOD)
     assert "📅 Periode: November 2026" in reply
-    assert "📌 Status: ⚠️ Belum ada nilai di portal" in reply
 
 
-async def test_cek_tetap_ringkas_saat_evaluasi_sudah_diisi(ctx, monkeypatch):
+async def test_evaluasi_eksplisit_hanya_bulan_yang_diminta(ctx, monkeypatch):
     settings, database, user = ctx
     monkeypatch.setattr(type(settings), "now", lambda self: NOW)
-    payloads = make_payloads()
-    payloads[endpoints.MONTHLY_REPORTS_PATH] = REPORT
-    bot_ctx = _bot_ctx(settings, database, CekClient(payloads))
+    client = FakeMonevClient({endpoints.MONTHLY_REPORTS_PATH: {"data": [OTHER_MONTH["data"][0]]}})
+    bot_ctx = _bot_ctx(settings, database, client)
 
-    reply = await commands.cmd_cek(bot_ctx, user)
-    assert "BELUM DIISI" not in reply
-
-
-async def test_cek_tidak_rusak_saat_endpoint_evaluasi_error(ctx, monkeypatch):
-    settings, database, user = ctx
-    monkeypatch.setattr(type(settings), "now", lambda self: NOW)
-    bot_ctx = _bot_ctx(settings, database, CekClient(make_payloads()))
-
-    reply = await commands.cmd_cek(bot_ctx, user)
-    assert reply  # status harian tetap dijawab, tanpa blok evaluasi
+    # Diminta bulan yang belum ada: tetap Respons A, tidak meminjam bulan lain.
+    assert await commands.cmd_evaluasi(bot_ctx, user, "2026-11") == evaluasi.eval_pending_message(PERIOD)
+    # Diminta bulan yang sudah ada: kartunya keluar.
+    assert "Oktober 2026" in await commands.cmd_evaluasi(bot_ctx, user, "2026-10")
+    # Argumen yang bukan bulan ditolak sebelum ada permintaan ke portal.
+    assert "Format:" in await commands.cmd_evaluasi(bot_ctx, user, "kemarin")

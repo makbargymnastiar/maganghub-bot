@@ -45,7 +45,7 @@ bot/
   jobs/
     poll.py           gabung 3 endpoint, deteksi perubahan, kirim notifikasi
     reminders.py      JADWAL TERKUNCI: 16:55 + berjenjang 18:00–23:59 + paket pagi 08:00
-    evaluations.py    pemantau hasil evaluasi bulanan (cek 30 menit, dedup per periode)
+    evaluations.py    pemantau hasil evaluasi bulanan (cek 30 menit, dedup per periode, fallback query)
     token_health.py   peringatan H-30 menit, deteksi 401, auto-refresh via cookie
     announcements.py  pengumuman + warning keterlambatan dari portal
   telegram/
@@ -139,8 +139,12 @@ tidak menghasilkan alert ganda. Kartu yang sama tidak pernah datang dua kali unt
 satu periode — termasuk setelah restart service, dan termasuk kalau mentor mengedit
 nilainya belakangan.
 
-Cek manual (`/cek` dan `/evaluasi [YYYY-MM]`) memakai Respons A saat portal masih
-kosong:
+Cek manual cukup lewat `/evaluasi [YYYY-MM]`. Tanpa argumen, bulan berjalan ditanya
+duluan tapi periode sebelumnya ikut dilihat — evaluasi Oktober yang baru ditulis mentor
+awal November harus tetap muncul, bukan dibalas "belum diisi". Kartu selalu menyebut
+periodenya sendiri, jadi tidak ada bulan yang salah diklaim. Dengan argumen, hanya
+bulan itu yang dilihat dan bulan lain tidak dipinjam. Saat portal memang masih kosong,
+jawabannya Respons A:
 
 ```
 ⏳ EVALUASI MENTOR BELUM DIISI
@@ -149,8 +153,10 @@ kosong:
 📌 Status: ⚠️ Belum ada nilai di portal
 ```
 
-Di `/cek` blok itu hanya menempel kalau evaluasi bulan ini memang belum ada nilainya;
-sudah terisi = `/cek` tetap ringkas seperti biasanya (kartu lengkap lewat `/evaluasi`).
+`/cek` sengaja **tidak** ikut melaporkan evaluasi: template status hariannya sudah
+disetujui berisi absensi saja, dan evaluasi sudah punya dua jalur sendiri (`/evaluasi`
+plus notifikasi otomatis). Bot juga tidak bertanya ke endpoint laporan bulanan saat
+melayani `/cek`.
 
 Isi kartu: 8 poin penilaian sikap (kehadiran & disiplin, sikap & perilaku,
 komunikasi, inisiatif & tanggung jawab, adaptasi, pengetahuan teknis,
@@ -197,11 +203,25 @@ bernama `*_grade` (portal boleh membalas dengan alias `*_score`) plus
 `mentor_feedback`. Tidak ada satu pun path yang mengandung kata "evaluation" —
 semua tebakan sebelumnya ternyata salah.
 
-Untuk melihat raw response aslinya di server (memastikan bentuknya masih sama):
+Yang TIDAK bisa digali dari bundle: bentuk pembungkus responsnya (nama field ada di
+kode frontend, respons aslinya tidak). Karena itu `endpoints.fetch_evaluation()`
+tidak berhenti di satu permintaan: jendela tanggal periode dicoba dulu, lalu seluruh
+laporan peserta (kalau portal ternyata tidak memakai tanggal sebagai penyaring
+periode, usaha kedua ini yang menyelamatkan). Endpoint laporan terbaru hanya
+ditanya kalau dua-duanya tidak menjawab sama sekali — job evaluasi tetap bertanya
+sedikit mungkin.
+
+Kalau dua usaha itu tetap tidak menemukan laporan padahal portal menjawab, yang
+aneh biasanya pembungkusnya. Dua cara membacanya:
 
 ```bash
-python scripts/probe_api.py --evaluations
+python scripts/probe_api.py --evaluations       # raw JSON keempat endpoint + verdict parser
+journalctl -u monev-bot | grep 'tidak ketemu'   # setelah LOG_LEVEL = "DEBUG" di config.py
 ```
+
+Baris log itu mencatat **bentuk** respons — kunci dan jumlah saja, tanpa nilai.
+Nilai laporan sengaja tidak pernah masuk log karena di situ ada nama mentor dan
+catatannya.
 
 ## Mengisi token lewat Telegram
 
@@ -319,7 +339,7 @@ sudo journalctl -fu monev-bot
 | `/start` | sambutan & cara mulai (untuk yang baru pertama chat) |
 | `/status` | status hari ini + riwayat 7 hari |
 | `/cek` | paksa polling sekarang, laporkan perubahan |
-| `/evaluasi [YYYY-MM]` | hasil evaluasi bulan ini (atau bulan yang diminta) on-demand; Respons A kalau mentor belum mengisi |
+| `/evaluasi [YYYY-MM]` | hasil evaluasi terbaru yang sudah dinilai (atau bulan yang diminta) on-demand; Respons A kalau mentor belum mengisi |
 | `/token <Bearer …>` | ganti token sesi (divalidasi dulu ke API) |
 | `/tokeninfo` | token aktif?, sisa umur, fingerprint sesi |
 | `/interval <menit>` | ubah frekuensi polling (min 5, tersimpan di DB, berlaku untuk semua pengguna) |
@@ -344,7 +364,7 @@ Cara tercepat mengambil token: bookmarklet di [`tools/bookmarklet.md`](tools/boo
 ## Pengujian
 
 ```bash
-python -m pytest -q                # 154 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, registrasi multi-user, laporan evaluasi + alert + kartu hasil, penggalian nama endpoint, kalimat pesan, b64/JWT/settings
+python -m pytest -q                # 169 test: status mapping, alur notifikasi, pengingat berjenjang, auto-refresh, registrasi multi-user, laporan evaluasi + alert + kartu hasil, penggalian nama endpoint, kalimat pesan, b64/JWT/settings
 python scripts/probe_api.py        # probe live: cetak status per tanggal + enum yang muncul di data nyata
 python scripts/probe_api.py --days 14 --token "Bearer …"
 python scripts/probe_api.py --evaluations        # raw JSON laporan bulanan + hasil parser

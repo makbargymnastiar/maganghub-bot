@@ -56,6 +56,33 @@ async def lookup_evaluation(
     return await endpoints.fetch_evaluation(client, user.participant_id, period)
 
 
+async def lookup_latest_evaluation(
+    db: aiosqlite.Connection,
+    user: User,
+    client: MonevClient,
+    now: datetime,
+    months_back: int = MONTHS_BACK,
+) -> EvaluationResult:
+    """Evaluasi terbaru yang memang sudah ada nilainya, dari periode yang masih wajar.
+
+    Dipakai `/evaluasi` tanpa argumen. Bulan berjalan ditanya duluan, tapi evaluasi
+    bulan lalu biasanya baru ditulis mentor pada awal bulan berikutnya — jadi kalau
+    bulan ini masih kosong, periode sebelumnya ikut dilihat. Kartu hasil selalu
+    menyebut periodenya sendiri, jadi tidak ada bulan yang salah diklaim.
+
+    Kalau tidak ada satu pun yang terisi, hasil periode berjalan (kosong) yang
+    dikembalikan supaya pemanggil tinggal menampilkan Respons A dengan bulan yang benar.
+    """
+    fallback: EvaluationResult | None = None
+    for period in periods_to_watch(now.date().isoformat(), months_back):
+        result = await lookup_evaluation(db, user, client, period, now)
+        if result.is_filled:
+            return result
+        if fallback is None:
+            fallback = result
+    return fallback or EvaluationResult(period=now.date().isoformat()[:7])
+
+
 async def run_evaluation_job(
     db: aiosqlite.Connection,
     settings: Settings,

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from functools import partial
+from typing import Any, Callable, Coroutine
 
 from .client import MonevClient, MonevError
 from . import evaluation
@@ -145,12 +146,12 @@ PERIOD_CURRICULUM_PATH_FMT = "/api/v1/participants/{participant_id}/periods/{sta
 REPORTS_LIMIT = 100
 
 
-async def _fetch_reports(client: MonevClient, participant_id: str, start: str, end: str) -> Any:
-    """Daftar laporan bulanan peserta pada satu jendela tanggal.
+async def _fetch_reports(client: MonevClient, participant_id: str, *, start: str = "", end: str = "") -> Any:
+    """Daftar laporan bulanan peserta, dengan atau tanpa jendela tanggal.
 
-    Path utama dipakai frontend untuk daftar per peserta; `participants-period`
-    dipakai halaman yang mengelompokkan laporan per periode. Yang kedua cuma dicoba
-    kalau yang pertama benar-benar menolak (404/403), bukan kalau jawabannya kosong.
+    Path utama dipakai frontend untuk daftar per peserta; `participants-period` dipakai
+    halaman yang mengelompokkan laporan per periode. Yang kedua cuma dicoba kalau yang
+    pertama benar-benar menolak (404/403), bukan kalau jawabannya kosong.
     """
     params = {"participant_id": participant_id, "limit": REPORTS_LIMIT}
     if start:
@@ -160,6 +161,24 @@ async def _fetch_reports(client: MonevClient, participant_id: str, start: str, e
     except MonevError as exc:
         log.debug("%s gagal (%s); coba %s", MONTHLY_REPORTS_PATH, exc, MONTHLY_REPORTS_BY_PERIOD_PATH)
     return await client.get(MONTHLY_REPORTS_BY_PERIOD_PATH, params)
+
+
+def _shape(node: Any) -> str:
+    """Ringkasan bentuk respons: kunci dan jumlah saja, tanpa nilai.
+
+    Cuma dipakai untuk log diagnostik. Nilai laporan tidak pernah ditulis ke log —
+    di situ ada nama mentor dan catatan yang seharusnya hanya dibaca peserta.
+    """
+    if isinstance(node, list):
+        return f"list[{len(node)}]"
+    if isinstance(node, dict):
+        dalam = ",".join(
+            f"{key}={_shape(value)}"
+            for key, value in list(node.items())[:12]
+            if isinstance(value, (dict, list))
+        )
+        return f"dict[{dalam or ' '.join(str(key) for key in list(node)[:12])}]"
+    return type(node).__name__
 
 
 async def fetch_period_curriculum(client: MonevClient, participant_id: str, start_date: str) -> Any:
@@ -179,15 +198,73 @@ async def fetch_period_curriculum(client: MonevClient, participant_id: str, star
 
 
 async def fetch_evaluation(client: MonevClient, participant_id: str, period: str) -> EvaluationResult:
-    """Hasil evaluasi satu periode ('YYYY-MM'); kosong kalau mentor belum mengisi.
+    """Hasil evaluasi satu periode ('YYYY-MM'); kosong kalau portal tidak punya laporan bulan itu.
 
-    `MonevError` dibiarkan naik ke pemanggil (token mati / server bermasalah), tapi
-    laporan yang memang belum ada bukan error: `EvaluationResult` tanpa isi.
+    Pertanyaannya satu, tapi bentuk permintaannya belum diuji ke response asli: laporan
+    bisa saja tercatat di tanggal luar bulan kalender periodenya (mentor mengisi
+    November pada 9 Desember), dan `start_date`/`end_date` belum pasti dipakai portal
+    sebagai penyaring periode. Jadi diusahakan lewat sumber yang semuanya ada di bundle
+    frontend: jendela tanggal periode dulu, lalu seluruh laporan peserta. Endpoint
+    laporan terbaru cuma cadangan kalau dua-duanya tidak menjawab sama sekali.
+    Semuanya dibaca parser yang sama — tidak ada nilai yang dikarang, yang berubah
+    hanya peluang laporan mentor benar-benar ketemu.
+
+    `MonevError` dibiarkan naik ke pemanggil HANYA kalau semua sumber menolak (token
+    mati / server bermasalah). Laporan yang memang belum ada bukan error: `EvaluationResult`
+    tanpa isi.
     """
     start, end = evaluation.period_window(period)
-    payload = await _fetch_reports(client, participant_id, start, end)
-    curriculum = await fetch_period_curriculum(client, participant_id, start)
-    return evaluation.parse_evaluation(payload, period, curriculum)
+    attempts: list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]] = []
+    if start:
+        # Yang paling sempit lebih dulu: kalau portal memang menyaring dengan jendela
+        # tanggal, permintaan pertama ini saja sudah cukup.
+        attempts.append(
+            (f"jendela {start}..{end}", partial(_fetch_reports, client, participant_id, start=start, end=end))
+        )
+    attempts.append(("semua laporan", partial(_fetch_reports, client, participant_id)))
+
+    errors: list[MonevError] = []
+    shapes: list[str] = []
+
+    async def _gali(label: str, attempt: Callable[[], Coroutine[Any, Any, Any]]) -> EvaluationResult | None:
+        """Satu permintaan; None kalau ditolak atau jawabannya tidak bernilai."""
+        try:
+            payload = await attempt()
+        except MonevError as exc:
+            errors.append(exc)
+            return None
+        shapes.append(f"{label} -> {_shape(payload)}")
+        if not evaluation.parse_evaluation(payload, period).has_content:
+            return None
+        # Kurikulum ditanya setelah ada isinya saja: sebagian besar siklus evaluasi
+        # bertanya ke periode yang laporannya memang belum ada.
+        curriculum = await fetch_period_curriculum(client, participant_id, start)
+        return evaluation.parse_evaluation(payload, period, curriculum)
+
+    for label, attempt in attempts:
+        hasil = await _gali(label, attempt)
+        if hasil is not None:
+            return hasil
+
+    # `latest` hanya ditanya kalau daftar laporan tidak menjawab sama sekali: jawaban
+    # "semua laporan" itu sudah superhimpunan dari laporan terbaru, jadi bertanya lagi
+    # cuma menambah permintaan tiap 30 menit tanpa peluang menemukan sesuatu.
+    if not shapes:
+        hasil = await _gali(
+            "laporan terbaru",
+            partial(client.get, MONTHLY_REPORTS_LATEST_PATH, {"participant_id": participant_id}),
+        )
+        if hasil is not None:
+            return hasil
+
+    if not shapes:
+        # Tidak ada satu pun sumber yang menjawab: bukan evaluasinya kosong, tapi
+        # tokennya atau servernya. Biar pemanggil yang memutuskan (dan menandai token).
+        raise errors[0]
+    # Semua sumber menjawab tapi tidak ada yang cocok: yang belum diketahui biasanya
+    # pembungkus responsnya, jadi bentuknya dicatat (kunci saja, tanpa nilai).
+    log.debug("evaluasi %s tidak ketemu; respons portal: %s", period, " | ".join(shapes))
+    return EvaluationResult(period=period)
 
 
 # Nama kunci yang isinya ID peserta. Sengaja hanya yang mengandung "participant":

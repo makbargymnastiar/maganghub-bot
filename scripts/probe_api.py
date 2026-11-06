@@ -37,8 +37,8 @@ async def probe_evaluations(client: MonevClient, participant_id: str, period: st
 
     Nama endpoint-nya sudah ditemukan dari bundle SPA, jadi alat ini bukan lagi
     pencari path: gunanya untuk memastikan bentuk response asli masih sama dengan
-    yang diasumsikan `bot/monev/evaluation.py`, atau membaca sendiri isi laporan
-    bulan tertentu.
+    yang diasumsikan `bot/monev/evaluation.py`, dan melihat bulan apa saja yang
+    sebenarnya dikirim portal untuk participant_id kita.
     """
     start, end = evaluation.period_window(period)
     window = {
@@ -47,25 +47,31 @@ async def probe_evaluations(client: MonevClient, participant_id: str, period: st
         "end_date": end,
         "limit": endpoints.REPORTS_LIMIT,
     }
+    # Dua query ke path yang sama: yang satu berjendela tanggal, yang satu tidak.
+    # Selisih jawabannya yang menjawab apakah portal benar-benar memakai
+    # start_date/end_date sebagai penyaring periode.
     targets = (
-        (endpoints.MONTHLY_REPORTS_PATH, window),
-        (endpoints.MONTHLY_REPORTS_BY_PERIOD_PATH, window),
-        (endpoints.MONTHLY_REPORTS_LATEST_PATH, {"participant_id": participant_id}),
-        (
-            endpoints.PERIOD_CURRICULUM_PATH_FMT.format(participant_id=participant_id, start_date=start),
-            None,
-        ),
+        ("berjendela", endpoints.MONTHLY_REPORTS_PATH, window),
+        ("semua laporan", endpoints.MONTHLY_REPORTS_PATH, {
+            "participant_id": participant_id, "limit": endpoints.REPORTS_LIMIT}),
+        ("per periode", endpoints.MONTHLY_REPORTS_BY_PERIOD_PATH, window),
+        ("terbaru", endpoints.MONTHLY_REPORTS_LATEST_PATH, {"participant_id": participant_id}),
+        ("kurikulum", endpoints.PERIOD_CURRICULUM_PATH_FMT.format(
+            participant_id=participant_id, start_date=start), None),
     )
     print(f"\n== endpoint evaluasi (periode {period}: {start} s/d {end}) ==")
     hit = 0
-    for path, query in targets:
+    for label, path, query in targets:
         try:
             payload = await client.get(path, query)
         except MonevError as exc:
-            print(f"\n{path} -> {exc}")
+            print(f"\n[{label}] {path} -> {exc}")
             continue
         hit += 1
-        print(f"\n{path} {query or ''} -> OK")
+        print(f"\n[{label}] {path} {query or ''} -> OK")
+        if label != "kurikulum":
+            bulan = evaluation.declared_periods(payload) or ["(tanpa penanda bulan)"]
+            print(f"bulan yang disebut laporan: {', '.join(bulan)}")
         print(json.dumps(payload, indent=2, ensure_ascii=False)[:4000])
     if not hit:
         print("\nSemua path evaluasi ditolak. Pastikan token masih hidup (/tokeninfo di Telegram).")

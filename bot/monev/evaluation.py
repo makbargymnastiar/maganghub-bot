@@ -22,6 +22,7 @@ dikenal menjadi `stars = 0` dan hanya teks aslinya yang ditampilkan di kartu.
 from __future__ import annotations
 
 import calendar
+import re
 from typing import Any
 
 from ..models import (
@@ -58,7 +59,8 @@ _COMMENT_FIELDS = ("mentor_feedback", "mentor_comment", "catatan_mentor", "catat
 # TIDAK ikut dihitung: laporan November yang ditulis mentor tanggal 9 Desember tetap
 # laporan November, bukan laporan Desember.
 _PERIOD_FIELDS = ("period", "periode", "month", "bulan", "for_month", "reference_month",
-                  "month_of", "month_year", "start_date")
+                  "month_of", "month_year", "report_month", "reporting_period",
+                  "period_start", "start_date")
 _STATUS_FIELDS = ("status", "state")
 _FILLED_FIELDS = ("is_filled", "filled", "is_submitted", "submitted", "is_done", "done",
                   "completed", "is_completed")
@@ -67,6 +69,19 @@ _UPDATED_FIELDS = ("updated_at", "submitted_at", "created_at", "date")
 _FILLED_WORDS = ("filled", "submitted", "approved", "done", "completed", "verified", "acc",
                  "selesai", "terisi", "terkirim")
 _EMPTY_WORDS = ("belum", "draft", "pending", "empty", "open", "process", "in_progress", "kosong")
+# Bentuk bulan yang mungkin ditulis portal. Semuanya dipakai di `_report_period`
+# supaya laporan tetap bisa dipilih walau formatnya berbeda dari dugaan.
+_TANGGAL_AWAL = re.compile(r"^(\d{4})[-/.](\d{1,2})")      # 2026-11, 2026/11/01
+_YYYYMM = re.compile(r"^(\d{4})(0[1-9]|1[0-2])$")          # 202611
+_BULAN_DULU = re.compile(r"^(0?[1-9]|1[0-2])[-/.](\d{4})$")  # 11/2026
+_NAMA_BULAN = re.compile(r"^([A-Za-z]+)[ ./-]+(\d{4})$")   # November 2026
+# Ejaan Indonesia dan Inggris sekaligus: belum tahu portal pakai yang mana.
+_NAMA_KE_BULAN = {
+    "januari": 1, "january": 1, "februari": 2, "february": 2, "maret": 3, "march": 3,
+    "april": 4, "mei": 5, "may": 5, "juni": 6, "june": 6, "juli": 7, "july": 7,
+    "agustus": 8, "august": 8, "september": 9, "oktober": 10, "october": 10,
+    "november": 11, "desember": 12, "december": 12,
+}
 # Pembungkus respons yang mungkin dipakai portal.
 _ENVELOPE_KEYS = ("data", "result", "results", "report", "records", "items")
 # Kunci pembungkus tempat daftar materi kurikulum berada.
@@ -168,10 +183,44 @@ def _rows(node: Any) -> list[dict[str, Any]]:
 
 
 def _report_period(lookup: dict[str, Any]) -> str:
-    """Bulan yang dinyatakan sebuah laporan ('YYYY-MM'), atau "" kalau tidak ada."""
-    text = str(_pick(lookup, _PERIOD_FIELDS) or "")
-    if len(text) >= 7 and text[4] == "-":
-        return text[:7]
+    """Bulan yang dinyatakan sebuah laporan ('YYYY-MM'), atau "" kalau tidak ada.
+
+    Yang diterima: `2026-11`, `2026-11-01T00:00:00+07:00`, `2026/11`, `202611`,
+    `11/2026`, `November 2026`, dan `month` + `year` yang dikirim terpisah. Bentuk
+    lain menghasilkan "" — laporan yang bulannya tidak pasti hanya dipakai kalau
+    memang cuma ada satu laporan (lihat `_select_report`).
+    """
+    raw = _pick(lookup, _PERIOD_FIELDS)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        text = str(int(raw))
+    else:
+        text = str(raw if raw is not None else "").strip()
+
+    match = _TANGGAL_AWAL.match(text)
+    if match:
+        year, month = match.groups()
+    else:
+        match = _YYYYMM.match(text) or _BULAN_DULU.match(text) or _NAMA_BULAN.match(text)
+        if not match:
+            return _year_month_pair(lookup)
+        first, second = match.groups()
+        if first.isdigit():
+            year, month = (first, second) if len(first) == 4 else (second, first)
+        else:
+            month = str(_NAMA_KE_BULAN.get(first.lower(), 0))
+            year = second
+    if not month.isdigit() or not 1 <= int(month) <= 12:
+        return ""
+    return f"{int(year):04d}-{int(month):02d}"
+
+
+def _year_month_pair(lookup: dict[str, Any]) -> str:
+    """`{"month": 11, "year": 2026}`: bulan dan tahun dikirim sebagai dua angka."""
+    month = lookup.get(_norm("month")) or lookup.get(_norm("bulan"))
+    year = lookup.get(_norm("year")) or lookup.get(_norm("tahun"))
+    if isinstance(month, (int, float)) and isinstance(year, (int, float)):
+        if 1 <= int(month) <= 12:
+            return f"{int(year):04d}-{int(month):02d}"
     return ""
 
 
@@ -230,6 +279,11 @@ def _select_report(payload: Any, period: str) -> dict[str, Any]:
     # bulan yang salah lebih buruk daripada diam.
     declared = [lookup for lookup in candidates if _report_period(lookup)]
     if period and declared:
+        return {}
+    if len(candidates) > 1:
+        # Beberapa laporan dan tidak satu pun menyebut bulan: tidak ada yang bisa
+        # memastikan mana yang periode ini. Job menanyakan dua periode sekaligus, jadi
+        # asal ambil di sini berarti kartu yang sama bisa terkirim dua kali.
         return {}
     return candidates[-1]
 
@@ -324,6 +378,21 @@ def _curriculum_items(lookup: dict[str, Any], curriculum_payload: Any) -> list[E
     for name in names:
         items.append(EvalItem(name=name, stars=0, raw=""))
     return items
+
+
+def declared_periods(payload: Any) -> list[str]:
+    """Bulan yang disebut laporan bernilai di payload ('' untuk yang tanpa bulan).
+
+    Hanya untuk diagnosis (lihat `scripts/probe_api.py`): dari sini kelihatan apakah
+    portal menyimpan laporan di luar bulan yang kita tanya, atau tidak mengirim
+    penanda bulan sama sekali.
+    """
+    out: list[str] = []
+    for row in _report_rows(_unwrap(payload)):
+        bulan = _report_period(_lookup(row))
+        if bulan not in out:
+            out.append(bulan)
+    return out
 
 
 def parse_evaluation(payload: Any, period: str, curriculum_payload: Any = None) -> EvaluationResult:
