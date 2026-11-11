@@ -40,7 +40,12 @@ log = logging.getLogger("bot.evaluasi")
 MONTHS_BACK = 2
 
 
-def _flag(period: str) -> str:
+def filled_flag(period: str) -> str:
+    """Flag global (log_date kosong) yang menandai evaluasi periode sudah terisi.
+
+    Dipakai juga oleh pengingat pagi: jadwal H-7 tidak layak diteruskan kalau
+    mentor ternyata sudah mengisi — lihat bot/jobs/reminders.py.
+    """
     return f"eval:{period}:filled"
 
 
@@ -99,7 +104,7 @@ async def run_evaluation_job(
     sent = 0
 
     for period in periods_to_watch(now.date().isoformat(), MONTHS_BACK):
-        if await store.flag_exists(db, user.tg_chat_id, "", _flag(period)):
+        if await store.flag_exists(db, user.tg_chat_id, "", filled_flag(period)):
             continue
         try:
             result = await lookup_evaluation(db, user, client, period, now)
@@ -109,7 +114,7 @@ async def run_evaluation_job(
         if not result.is_filled:
             continue
 
-        await store.set_flag(db, user.tg_chat_id, "", _flag(period), now)
+        await store.set_flag(db, user.tg_chat_id, "", filled_flag(period), now)
         # Pesan 1: alert instan. Pesan 2: rincian nilainya.
         await notify.send_message(user.tg_chat_id, evaluasi.eval_alert_message())
         await notify.send_message(user.tg_chat_id, evaluasi.eval_result_message(result))

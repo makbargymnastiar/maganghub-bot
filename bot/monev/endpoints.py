@@ -312,3 +312,61 @@ async def discover_participant_id(client: MonevClient) -> str:
         if candidates:
             return candidates[0]
     return ""
+
+
+# Pengajuan uang saku = `/payment/claims` — path + parameter digali dari bundle
+# SPA (frontend: `fetchClaims({participant_id, schedule_id, period_start})`,
+# respon `{data: [...], total}`). `schedule_id` di halaman peserta dibaca dari
+# profil sebagai `internship_batch_id` (varian: `schedule_id`).
+PAYMENT_CLAIMS_PATH = "/api/v1/payment/claims"
+
+_SCHEDULE_KEYS = {"internshipbatchid", "scheduleid"}
+
+
+def walk_schedule_ids(node: Any) -> list[str]:
+    if isinstance(node, dict):
+        found: list[str] = []
+        for key, value in node.items():
+            if isinstance(key, str) and key.lower().replace("_", "") in _SCHEDULE_KEYS:
+                if isinstance(value, (str, int)) and str(value).strip():
+                    found.append(str(value).strip())
+            found.extend(walk_schedule_ids(value))
+        return found
+    if isinstance(node, list):
+        nested: list[str] = []
+        for item in node:
+            nested.extend(walk_schedule_ids(item))
+        return nested
+    if isinstance(node, str) and node.strip().startswith(("{", "[")):
+        try:
+            return walk_schedule_ids(json.loads(node))
+        except ValueError:
+            return []
+    return []
+
+
+async def discover_schedule_id(client: MonevClient) -> str:
+    """ID batch/schedule aktif peserta dari profil — kosong kalau tidak menyebut.
+
+    Dipakai sebagai parameter /payment/claims; endpoint tetap ditanya tanpa itu
+    (filter participant_id + period_start seharusnya sudah cukup di sisi server).
+    """
+    for path in (USER_PROFILE_PATH, HOME_PATH):
+        try:
+            payload = await client.get(path)
+        except MonevError:
+            continue
+        candidates = walk_schedule_ids(payload)
+        if candidates:
+            return candidates[0]
+    return ""
+
+
+async def fetch_stipend_claims(
+    client: MonevClient, participant_id: str, period_start: str, schedule_id: str = ""
+) -> Any:
+    """Daftar pengajuan uang saku satu periode (`period_start` = 'YYYY-MM-01')."""
+    params: dict[str, str] = {"participant_id": participant_id, "period_start": period_start}
+    if schedule_id:
+        params["schedule_id"] = schedule_id
+    return await client.get(PAYMENT_CLAIMS_PATH, params)

@@ -18,12 +18,15 @@ import aiosqlite
 
 from .. import store
 from ..jobs import evaluations, token_health
+from ..jobs import stipend as jobs_stipend
 from ..jobs.poll import PollResult, run_poll
 from ..messages import chat, evaluasi, sesi
+from ..messages import stipend as messages_stipend
 from ..messages.base import esc
 from ..models import STATUS_ACTIVE, STATUS_PENDING, User
 from ..monev import endpoints
 from ..monev.client import MonevClient, MonevError, TokenRejected
+from ..monev.evaluation import periods_to_watch
 from ..monev.jwt_utils import fingerprint, looks_like_jwt, session_user, ttl_seconds
 from ..monev.status import ALL_LABELS
 from ..settings import Settings, mask_token, normalize_cookie
@@ -554,6 +557,41 @@ async def cmd_evaluasi(ctx: BotContext, user: User, args: str = "") -> str:
     return evaluasi.eval_result_message(result)
 
 
+async def cmd_klaim(ctx: BotContext, user: User, args: str = "") -> str:
+    """/klaim [YYYY-MM] — status + estimasi rincian pengajuan uang saku.
+
+    Konvensinya sama persis dengan /evaluasi: periode yang diminta eksplisit
+    hanya dilihat bulan itu (klaim bulan lain tidak pernah dipinjam); tanpa
+    argumen dicari periode terbaru yang sudah punya klaim — mentor biasanya
+    baru mengajukan klaim bulan lalu pada ± tanggal 9 bulan berjalan.
+    """
+    period = (args or "").strip()
+    if period and not PERIODE_RE.match(period):
+        return "Format: <code>/klaim 2026-10</code> (kosong = periode terbaru yang sudah diajukan)."
+    if not user.participant_id:
+        return chat.participant_id_needed_message()
+
+    now = ctx.settings.now()
+    client = ctx.client_for(user)
+    try:
+        if period:
+            est = await jobs_stipend.lookup_stipend_estimate(ctx.db, user, client, period, now)
+            shown = period
+        else:
+            est = await jobs_stipend.lookup_latest_stipend_estimate(ctx.db, user, client, now)
+            # Belum ada klaim = yang sedang ditunggu adalah klaim bulan lalu
+            # (jatuh tempo ± tanggal 9), bukan bulan berjalan.
+            shown = periods_to_watch(now.date().isoformat(), 2)[-1]
+    except MonevError as exc:
+        return chat.api_error_message(str(exc))
+    finally:
+        await client.close()
+
+    if est is None:
+        return messages_stipend.claim_pending_message(shown)
+    return messages_stipend.claim_detail_message(est)
+
+
 async def cmd_stop(ctx: BotContext, user: User, args: str = "") -> str:
     await store.deactivate_user(ctx.db, user.tg_chat_id)
     return chat.stopped_message()
@@ -577,6 +615,7 @@ HANDLERS: dict[str, Any] = {
     "log": cmd_log,
     "daftar": cmd_daftar,
     "evaluasi": cmd_evaluasi,
+    "klaim": cmd_klaim,
     "stop": cmd_stop,
     "lanjut": cmd_lanjut,
 }

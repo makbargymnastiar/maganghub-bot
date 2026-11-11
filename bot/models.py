@@ -195,6 +195,60 @@ class EvaluationResult:
         return [item for item in self.scored if item.stars >= 5]
 
 
+# --- pengajuan uang saku bulanan ---------------------------------------------
+
+@dataclass
+class StipendClaim:
+    """Satu pengajuan uang saku satu periode ('YYYY-MM'), dari /payment/claims.
+
+    Nama field mengikuti yang dibaca frontend portal dari respons klaim
+    (total_working_days, payable_days, amount, submitted_at) — angka 'payable'
+    sudah termasuk izin sakit berbayar, jadi selisih total-payable itulah mangkir.
+    """
+
+    period: str
+    claim_id: str = ""
+    submitted_at: str = ""
+    amount: int | None = None  # nilai pengajuan rupiah dari portal; None tak terbaca
+    total_working_days: int = 0
+    payable_days: int = 0
+    present_days: int = 0
+    paid_leave_days: int = 0
+
+    @property
+    def absent_days(self) -> int:
+        return max(0, self.total_working_days - self.payable_days)
+
+    @property
+    def has_days(self) -> bool:
+        return self.total_working_days > 0
+
+    @property
+    def percent(self) -> int:
+        if not self.total_working_days:
+            return 0
+        return int(self.payable_days * 100 // self.total_working_days)
+
+
+@dataclass
+class StipendEstimate:
+    """Angka final estimasi pencairan — siap tempel ke pesan rincian."""
+
+    period: str
+    region: str
+    ump: int
+    total_days: int
+    payable_days: int
+    absent_days: int
+    percent: int
+    potongan: int
+    diterima: int
+
+    @property
+    def perfect(self) -> bool:
+        return self.absent_days <= 0
+
+
 @dataclass
 class Event:
     log_date: str

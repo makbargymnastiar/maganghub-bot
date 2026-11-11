@@ -33,6 +33,7 @@ dist/
 *.tmp
 *.temp
 .pytmp
+.cache/
 
 # Log
 logs/

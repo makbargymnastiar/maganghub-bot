@@ -1,6 +1,6 @@
 """Uji jadwal pengingat TERKUNCI — berjenjang, jendela, dan interval antar-kirim."""
 
-from datetime import datetime, time as dtime
+from datetime import date, datetime, time as dtime
 
 from bot import db as dbmod
 from bot import store
@@ -13,6 +13,7 @@ from bot.jobs.reminders import (
     current_tier,
     in_window,
     interval_due,
+    nagged_eval_period,
     revision_followup_due,
     run_reminders,
 )
@@ -76,6 +77,12 @@ def test_followup_revisi_setelah_delapan_jam():
     assert revision_followup_due(at(16, 59), first_seen) is False
     assert revision_followup_due(at(17, 0), first_seen) is True
     assert revision_followup_due(at(17, 0), None) is False
+
+
+def test_periode_evaluasi_yang_dikejar_adalah_bulan_sebelumnya():
+    assert nagged_eval_period(date(2026, 11, 5)) == "2026-10"
+    assert nagged_eval_period(date(2026, 12, 9)) == "2026-11"
+    assert nagged_eval_period(date(2027, 1, 3)) == "2026-12"
 
 
 # --- integrasi: run_reminders dengan DB nyata + notify tiruan ------------------
@@ -250,5 +257,31 @@ async def test_eval_h_minus_dan_uang_saku(tmp_path):
         assert "eval_due" in sent and "stipend" in sent
         assert "HARI-H EVALUASI MENTOR" in next(t for _, t in tg.messages if "EVALUASI MENTOR" in t)
         assert "PENGAJUAN UANG SAKU" in next(t for _, t in tg.messages if "UANG SAKU" in t)
+    finally:
+        await db.close()
+
+
+async def test_eval_sudah_diisi_mentor_menghentikan_pengingat_evaluasi(tmp_path):
+    # Bug lama: pengingat H-7 dan hari-H tetap dikirim walaupun mentor sudah
+    # mengisi — watcher menulis flag eval:<periode>:filled, itu yang sekarang dibaca.
+    settings, user, db = await make_env(tmp_path, "2026-11-05", "PARTIAL")
+    tg = Notify()
+    try:
+        await store.set_flag(db, user.tg_chat_id, "", "eval:2026-10:filled", at(7, 30))
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-05"))
+        assert "eval_reminder" not in sent
+        assert not any("PENGINGAT EVALUASI MENTOR" in t for _, t in tg.messages)
+        # flag harian tidak ditulis → setelah Evaluasi nanti bisa nagih lagi
+        assert not await store.flag_exists(db, user.tg_chat_id, "2026-11-05", "eval_reminder")
+    finally:
+        await db.close()
+
+    # tanggal 9: eval_due berhenti, tapi pengajuan uang saku tetap jalan
+    settings, user, db = await make_env(tmp_path, "2026-11-09", "PARTIAL", name="sudah-diisi.db")
+    tg = Notify()
+    try:
+        await store.set_flag(db, user.tg_chat_id, "", "eval:2026-10:filled", at(7, 30))
+        sent = await run_reminders(db, settings, user, tg, now=at(8, 0, day="2026-11-09"))
+        assert "eval_due" not in sent and "stipend" in sent
     finally:
         await db.close()

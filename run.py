@@ -2,7 +2,8 @@
 
 Satu proses asyncio dengan dua loop:
 1. long polling Telegram (perintah user),
-2. scheduler job: polling status, reminder, kesehatan token, pengumuman, evaluasi.
+2. scheduler job: polling status, reminder, kesehatan token, pengumuman,
+   evaluasi, dan klaim uang saku.
 
 Tidak butuh port inbound/HTTPS, jadi aman dijalankan sebagai systemd service
 di server Ubuntu.
@@ -22,6 +23,7 @@ from bot import store
 from bot.jobs import token_health
 from bot.jobs.announcements import run_info_job
 from bot.jobs.evaluations import run_evaluation_job
+from bot.jobs.stipend import run_stipend_job
 from bot.jobs.reminders import run_reminders
 from bot.monev.client import MonevError, TokenRejected
 from bot.settings import load_settings
@@ -31,7 +33,7 @@ from bot.telegram.commands import BotContext, apply_cookie, apply_token, dispatc
 REMINDER_EVERY = timedelta(minutes=1)  # jadwal terkunci butuh tick menit (tier 3 menit)
 TOKEN_HEALTH_EVERY = timedelta(minutes=30)
 INFO_EVERY = timedelta(hours=6)
-EVALUATION_EVERY = timedelta(minutes=30)  # hasil evaluasi dikirim hampir instan, bukan 6 jam
+EVALUATION_EVERY = timedelta(minutes=30)  # hasil evaluasi + klaim uang saku: hampir instan, bukan 6 jam
 POLL_USER_GAP_SECONDS = 2  # jeda antar pengguna dalam satu siklus polling
 
 
@@ -107,8 +109,11 @@ async def scheduler_loop(ctx: BotContext, stop: asyncio.Event) -> None:
                 client = ctx.client_for(user)
                 try:
                     await run_evaluation_job(ctx.db, settings, user, client, ctx.tg, now=now)
+                    # Pemantauan uang saku memakai periode yang sama — client yang
+                    # sama, satu slot jadwal agar tidak ada cadence terpisah baru.
+                    await run_stipend_job(ctx.db, settings, user, client, ctx.tg, now=now)
                 except Exception:  # noqa: BLE001
-                    logging.exception("job evaluasi gagal untuk user %s", user.tg_chat_id)
+                    logging.exception("job evaluasi/uang saku gagal untuk user %s", user.tg_chat_id)
                 finally:
                     await client.close()
 

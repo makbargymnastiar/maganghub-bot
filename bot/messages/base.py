@@ -51,6 +51,15 @@ def esc(value: Any) -> str:
     return escape(str(value if value is not None else ""), quote=False)
 
 
+def rupiah(value: int) -> str:
+    """5729876 -> 'Rp5.729.876' — pemisah titik gaya Indonesia."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return esc(value)
+    return "Rp" + f"{number:,}".replace(",", ".")
+
+
 def _parse(iso_date: str) -> datetime | None:
     try:
         return datetime.fromisoformat(iso_date)

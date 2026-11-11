@@ -49,6 +49,7 @@ def help_text(username: str) -> str:
         "/panduan — cara ambil &amp; isi token monev (step by step)\n"
         "/daftar &lt;participant_id&gt; — daftar sendiri (token bisa langsung dibaca otomatis)\n"
         "/evaluasi [YYYY-MM] — hasil evaluasi mentor (bintang + komentar)\n"
+        "/klaim [YYYY-MM] — status &amp; estimasi rincian pengajuan uang saku\n"
         "/stop — hentikan pemantauan akun ini (data tetap tersimpan)\n"
         "/lanjut — aktifkan lagi pemantauan setelah /stop\n"
         "/help — pesan ini\n\n"

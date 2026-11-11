@@ -52,7 +52,8 @@ async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
 
 
 async def collect_bundle(
-    client: httpx.AsyncClient, web_url: str, max_chunks: int, only: tuple[str, ...] = ()
+    client: httpx.AsyncClient, web_url: str, max_chunks: int, only: tuple[str, ...] = (),
+    cache_dir: Path | None = None,
 ) -> list[str]:
     """Unduh halaman pembuka + chunk JS SPA, kembalikan teks-teksnya.
 
@@ -61,8 +62,19 @@ async def collect_bundle(
 
     `only` = nama chunk tertentu (mis. hasil `--chunks`): ambil persis itu saja, tanpa
     menjelajahi seluruh antrean — sopan ke server dan jauh lebih cepat.
+
+    `cache_dir`: kalau diisi, hasil unduhan disimpan/disimpan ulang di sana supaya
+    grep berulangan tidak mengunduh ulang seluruh bundle.
     """
     index = await fetch_text(client, f"{web_url.rstrip('/')}/")
+    if cache_dir is not None and index:
+        index_file = cache_dir / "index.html"
+        if index_file.exists():
+            cached = index_file.read_text(encoding="utf-8", errors="replace")
+            index = cached
+        else:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            index_file.write_text(index, encoding="utf-8")
     if not index:
         print("Halaman pembuka SPA tidak bisa diambil. Coba --url manual / cek koneksi.")
         return []
@@ -92,9 +104,17 @@ async def collect_bundle(
         if url in seen:
             continue
         seen.add(url)
-        js = await fetch_text(client, url)
+        cached_js = ""
+        if cache_dir is not None:
+            chunk_file = cache_dir / url.rsplit("/", 1)[-1]
+            if chunk_file.exists():
+                cached_js = chunk_file.read_text(encoding="utf-8", errors="replace")
+        js = cached_js or await fetch_text(client, url)
         if not js:
             continue
+        if cache_dir is not None and not cached_js:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / url.rsplit("/", 1)[-1]).write_text(js, encoding="utf-8")
         texts.append(js)
         if not only:
             queue.extend(frontend_paths.chunk_urls(js, web_url, asset_base))
@@ -172,6 +192,7 @@ async def main(args) -> int:
         texts = await collect_bundle(
             http, web_url, args.max_chunks,
             only=tuple(args.chunks.split(",")) if args.chunks else (),
+            cache_dir=Path(args.cache) if args.cache else None,
         )
 
     if args.grep:
@@ -256,6 +277,7 @@ if __name__ == "__main__":
     parser.add_argument("--url", help="origin SPA (default MONEV_WEB_URL dari config)")
     parser.add_argument("--max-chunks", type=int, default=80, help="batas chunk JS yang dibaca")
     parser.add_argument("--chunks", help="nama chunk tertentu, pisahkan dengan koma (tanpa BFS)")
+    parser.add_argument("--cache", help="direktori cache bundle (mis. .cache/spa) agar grep berulangan murah")
     parser.add_argument("--grep", help="cetak cuplikan bundle yang cocok pola ini (regex)")
     parser.add_argument("--grep-limit", type=int, default=40, help="jumlah cuplikan --grep")
     parser.add_argument("--sweep", action="store_true", help="panggil tiap path kandidat dengan token")

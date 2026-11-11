@@ -9,7 +9,8 @@ Aturan yang dijalankan (kalimat aslinya ada di bot/messages/pengisian.py dkk):
 - 23:46–23:59      tiap 3 menit
 - 00:01–06:00      1x: laporan kemarin terlewat (diblok sampai pagi)
 - 08:00–11:59      1x per item: libur hari ini, tagihan ACC ≥5 hari,
-                   evaluasi H-7 (tanggal 2–8), pengajuan uang saku (tanggal 9)
+                   evaluasi H-7 (tanggal 2–8, berhenti begitu mentor mengisi),
+                   pengajuan uang saku (tanggal 9)
 
 Semua "sekali sehari" dijamin flag di notify_flags (kunci per tanggal), jadi
 restart bot di tengah hari tidak mengulang pesan yang sudah terkirim. Penjadwal
@@ -31,6 +32,7 @@ from ..messages import absensi, harian, pengisian, tagihan
 from ..models import User
 from ..monev.status import ALL_LABELS, NAGGABLE_KEYS, NEEDS_REVISION
 from ..settings import Settings
+from .evaluations import filled_flag
 
 log = logging.getLogger("bot.reminder")
 
@@ -85,6 +87,15 @@ def revision_followup_due(now: datetime, first_seen: datetime | None) -> bool:
     if first_seen is None:
         return False
     return (now - first_seen) >= timedelta(hours=REVISION_AFTER_HOURS)
+
+
+def nagged_eval_period(today: date) -> str:
+    """Periode evaluasi yang sedang dikejar pada tanggal 2–9: bulan sebelumnya.
+
+    Mentor mengisi evaluasi November paling lambat 9 Desember, jadi pengingat
+    pagi awal Desember bicara periode 'YYYY-11' — bukan bulan berjalan.
+    """
+    return (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
 
 
 async def _send(
@@ -243,8 +254,16 @@ async def run_morning(
                 )
             )
 
+    # 5c/5d) Nagian evaluasi (H-7..H-1 dan hari-H tanggal 9) hanya berlaku kalau
+    #      portal memang belum punya nilai. Watcher evaluasi menulis flag
+    #      eval:<periode>:filled begitu laporan mentor muncul — setelah itu semua
+    #      pengingat evaluasi berhenti; yang belum diisi tetap diterus tiap pagi.
+    eval_is_done = await store.flag_exists(
+        db, uid, "", filled_flag(nagged_eval_period(today))
+    )
+
     # 5c) Evaluasi mentor H-7..H-1 (tanggal 2–8).
-    if 2 <= today.day <= EVAL_LAST_DAY and not await store.flag_exists(db, uid, today_iso, "eval_reminder"):
+    if 2 <= today.day <= EVAL_LAST_DAY and not eval_is_done and not await store.flag_exists(db, uid, today_iso, "eval_reminder"):
         sent.append(
             await _send(
                 db, uid, today_iso, "eval_reminder",
@@ -254,7 +273,7 @@ async def run_morning(
 
     # 5d) Hari-H evaluasi mentor (tanggal 9). Terpisah dari flag `stipend` karena
     #     dua-duanya jatuh di tanggal yang sama tapi isinya berbeda.
-    if today.day == STIPEND_DAY and not await store.flag_exists(db, uid, today_iso, "eval_due"):
+    if today.day == STIPEND_DAY and not eval_is_done and not await store.flag_exists(db, uid, today_iso, "eval_due"):
         sent.append(
             await _send(
                 db, uid, today_iso, "eval_due", harian.eval_due_message(), notify, now,
